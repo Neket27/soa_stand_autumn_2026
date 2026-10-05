@@ -1,0 +1,4 @@
+[
+  {"code": "favorite-units", "name": "Favorites", "description": "All favorite units of the current user"},
+  {"code": "my-unit", "name": "My units", "description": "All units assigned to the current user"}
+]

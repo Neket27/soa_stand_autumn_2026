@@ -1,0 +1,10 @@
+{
+  "content": [
+    {"code": "SMOKE", "name": "Smoke Space", "type": {"code": "AC21_new", "name": "AC21 NEW"},
+     "createdAt": "2025-06-17T12:55:20.783024Z", "updatedAt": "2025-10-21T10:22:38.376944Z"},
+    {"code": "OTHER", "name": "Other Space", "type": {"code": "AC21_new", "name": "AC21 NEW"}}
+  ],
+  "pageSize": 20,
+  "hasNext": false,
+  "pageNumber": 0
+}

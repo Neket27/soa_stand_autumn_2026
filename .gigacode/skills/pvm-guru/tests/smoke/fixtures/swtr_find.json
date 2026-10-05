@@ -1,0 +1,20 @@
+{
+  "content": [
+    {
+      "unit": {
+        "code": "SMOKE-2",
+        "summary": "Another synthetic smoke unit",
+        "description": "Synthetic description for the offline smoke suite.",
+        "space": "SMOKE",
+        "suit": "task",
+        "createdAt": "2020-01-03T00:00:00Z",
+        "updatedAt": "2020-01-04T00:00:00Z"
+      },
+      "attributes": [
+        {"attribute": {"code": "status", "name": "Status", "type": "string"}, "value": "open"}
+      ]
+    }
+  ],
+  "page": {"page": 0, "size": 20},
+  "totalElements": 1
+}

@@ -1,0 +1,7 @@
+{
+  "type": "known",
+  "username": "smoke.user",
+  "userKey": "ff8080816smoke",
+  "displayName": "Smoke User",
+  "_links": {"self": "https://conf.smoke.test/wiki/rest/api/user"}
+}

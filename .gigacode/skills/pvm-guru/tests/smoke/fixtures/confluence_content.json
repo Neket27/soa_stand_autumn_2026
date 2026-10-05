@@ -1,0 +1,10 @@
+{
+  "id": "1001",
+  "type": "page",
+  "title": "Smoke Confluence Page",
+  "space": {"key": "SMK", "name": "Smoke Space", "id": "200"},
+  "version": {"number": 3},
+  "body": {"storage": {"value": "<p>Synthetic storage body.</p>", "representation": "storage"}},
+  "ancestors": [{"id": "1000", "title": "Smoke Parent"}],
+  "_links": {"webui": "/pages/1001", "base": "https://conf.smoke.test/wiki"}
+}

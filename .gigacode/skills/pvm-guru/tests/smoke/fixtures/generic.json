@@ -1,0 +1,15 @@
+{
+  "content": [],
+  "data": [],
+  "results": [],
+  "issues": [],
+  "comments": [],
+  "total": 0,
+  "totalElements": 0,
+  "count": 0,
+  "version": {"number": 1},
+  "title": "Generic smoke fixture",
+  "type": "page",
+  "space": {"key": "SMK", "name": "Smoke Space", "id": "200"},
+  "fields": {}
+}

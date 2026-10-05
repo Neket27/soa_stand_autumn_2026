@@ -1,0 +1,291 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "custom/Qwen/Qwen3.8-27B",
+  "instructions": ["AGENTS.md"],
+  "provider": {
+    "custom": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "SBT-AI-Hub",
+      "options": {
+        "baseURL": "https://api.ai.sbt/openai/v1",
+        "apiKey": "YOUR API KEY FROM https://hub.ai.sbt/"
+      },
+      "models": {
+        // Дефолтная модель. Рассуждение включается полем "reasoningEffort"
+        // внутри "options": opencode переносит его в тело запроса как
+        // reasoning_effort. Модель знает ровно три уровня — low, medium, xhigh;
+        // серверный дефолт low, поэтому здесь он поднят вручную до xhigh.
+        // Значение "high" эта модель не принимает и отвечает 400 Bad Request.
+        "Qwen/Qwen3.8-27B": {
+          "name": "Qwen/Qwen3.8-27B",
+          "limit": {
+            "context": 262144,
+            "output": 262144
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          },
+          "options": {
+            "reasoningEffort": "xhigh"
+          }
+        },
+        "Qwen/Qwen3-Coder-Next": {
+          "name": "Qwen/Qwen3-Coder-Next",
+          "limit": {
+            "context": 262000,
+            "output": 262000
+          }
+        },
+        "deepseek-ai/DeepSeek-V4-Flash": {
+          "name": "deepseek-ai/DeepSeek-V4-Flash",
+          "limit": {
+            "context": 240000,
+            "output": 240000
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        },
+        // Рассуждающая модель, на вход только текст. Уровни рассуждения по
+        // паспорту модели: low, medium, high, xhigh, max (minimal не поддержан).
+        // temperature и top_p здесь — рекомендованные Zhipu значения; в теле
+        // запроса они перебивают то, что подставит opencode, потому что спред
+        // "options" идёт после штатных temperature / top_p / max_tokens.
+        "zai-org/GLM-5.2": {
+          "name": "GLM-5.2 (Zhipu AI · 202K ctx · 128K out · reasoning)",
+          "reasoning": true,
+          "limit": {
+            "context": 202752,
+            "output": 131072
+          },
+          "modalities": {
+            "input": ["text"],
+            "output": ["text"]
+          },
+          "options": {
+            "reasoningEffort": "xhigh",
+            "temperature": 1.0,
+            "top_p": 0.95
+          }
+        },
+        "Qwen/Qwen3.6-27B": {
+          "name": "Qwen/Qwen3.6-27B",
+          "limit": {
+            "context": 262000,
+            "output": 262000
+          },
+          "modalities": {
+            "input": ["text", "image"],
+            "output": ["text"]
+          }
+        }
+      }
+    }
+  },
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Модели агентов подобраны по типу работы:
+  //   Qwen/Qwen3.8-27B      — рассуждение, планирование, ревью (xhigh);
+  //   Qwen/Qwen3-Coder-Next — то, что пишет и правит код.
+  //
+  // Qwen/Qwen3.6-27B и zai-org/GLM-5.2 в списке моделей лежат, но ни одному
+  // агенту не назначены. 3.6 — предыдущая дефолтная модель, оставлена на случай
+  // отката. К GLM-5.2 доступ выдан не всем; если он у вас есть — впишите
+  // "custom/zai-org/GLM-5.2" нужным агентам либо выберите её вручную в TUI
+  // (Ctrl+X M). Контекст у неё 202 752 токена — самый короткий из четырёх,
+  // за ответ она отдаёт до 131 072 токенов, а на вход принимает только текст.
+  // ───────────────────────────────────────────────────────────────────────────
+  "agent": {
+    "build": {
+      "model": "custom/Qwen/Qwen3.8-27B",
+      "temperature": 0.2,
+      "maxSteps": 60
+      // Маски MCP-инструментов для агента build. Включаются вместе с блоком
+      // "mcp" в конце файла — не забудьте вернуть запятую после "maxSteps": 60.
+      // , "tools": {
+      //     "context7_*": true,
+      //     "gh_grep_*": true,
+      //     "memory_banks_*": true
+      //   }
+    },
+    "plan": {
+      "model": "custom/Qwen/Qwen3.8-27B",
+      "temperature": 0.1,
+      "maxSteps": 20,
+      "permission": {
+        "bash": "deny",
+        "edit": {
+          "*": "deny",
+          "docs/plans/*.md": "allow"
+                }
+                    }
+            },
+    "exec": {
+      "model": "custom/Qwen/Qwen3-Coder-Next"
+    },
+    "executor": {
+      "model": "custom/Qwen/Qwen3-Coder-Next"
+    },
+    "fixer": {
+      "model": "custom/Qwen/Qwen3-Coder-Next"
+    },
+    "smells": {
+      "model": "custom/Qwen/Qwen3.8-27B"
+    },
+    "finalizer": {
+      "model": "custom/Qwen/Qwen3.8-27B"
+    },
+    "guru-thesis": {
+      "model": "custom/Qwen/Qwen3.8-27B"
+    },
+    "guru-antithesis": {
+      "model": "custom/Qwen/Qwen3.8-27B"
+    }
+  },
+  "permission": {
+    "edit": "allow",
+    "read": {
+      "*": "allow",
+      "*.env": "deny",
+      "*.env.*": "deny",
+      "*.env.example": "allow",
+      "~/.swtr-review.env": "allow"
+    },
+    "bash": {
+      "*": "allow",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git show*": "allow",
+      "git checkout*": "allow",
+      "git commit*": "allow",
+      "git push*": "deny",
+      "rg *": "allow",
+      "fd *": "allow",
+      "npm *": "allow",
+      "pnpm *": "allow",
+      "yarn *": "allow",
+      "bun *": "allow",
+      "python*": "allow",
+      "pytest*": "allow",
+      "go test*": "allow",
+      "cargo test*": "allow",
+      "rm *": "deny",
+      "sudo *": "deny"
+    },
+    "webfetch": "allow",
+    "skill": {
+      "*": "allow",
+      "internal-*": "deny",
+      "experimental-*": "ask"
+    },
+    "task": {
+      "*": "deny",
+      "implementation": "allow",
+      "quality": "allow",
+      "simplification": "allow",
+      "testing": "allow",
+      "documentation": "allow",
+      "executor": "allow",
+      "fixer": "allow",
+      "smells": "allow",
+      "finalizer": "allow",
+      "guru-thesis": "allow",
+      "guru-antithesis": "allow",
+      "crpv-req-extractor": "allow",
+      "crpv-plan-comparator": "allow"
+    },
+    "todoread": "allow",
+    "todowrite": "allow",
+    "external_directory": "allow",
+    "doom_loop": "allow"
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ВСЁ, ЧТО НИЖЕ, — MCP. ЗАКОММЕНТИРОВАНО ЦЕЛИКОМ, ОСТАВЛЕНО КАК СПРАВКА.
+  //
+  // Так сделано намеренно. MCP-серверы у всех разные: у одного нет токена
+  // getdocs, у другого закрыт выход в интернет, у третьего не поднимается npx.
+  // Любая из этих причин роняет старт opencode с ошибкой, поэтому шаблон
+  // приезжает без единого включённого сервера — чтобы сразу после `cp` он
+  // просто запустился.
+  //
+  // Чтобы включить нужное: снимите комментарии с блоков "mcp" и "tools" ниже
+  // и ПОСТАВЬТЕ ЗАПЯТУЮ после закрывающей скобки блока "permission" выше —
+  // без неё конфиг станет невалидным.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // MCP-СЕРВЕРЫ — черновики, включайте нужное флагом "enabled".
+  //
+  // Проверено на opencode 1.17.11:
+  //   • "type" бывает ТОЛЬКО "local" (stdio-процесс) и "remote" (StreamableHTTP).
+  //     Типов "sse" / "http" / "streamable-http" не существует. Запись с
+  //     неизвестным типом молча выбрасывается ЦЕЛИКОМ: сервер не появится в
+  //     `opencode mcp list`, а в лог упадёт
+  //     ERROR message="Ignoring MCP config entry without type" key=<имя>.
+  //   • "remote" — это тот же транспорт, что "httpUrl" в конфигах Claude Code
+  //     и GigaCode. Отдельного поля httpUrl у opencode нет.
+  //   • Подстановки в значениях: {env:ПЕРЕМЕННАЯ} и {file:путь}. {file:~/...}
+  //     разворачивает ~ и срезает завершающий перевод строки, поэтому токен
+  //     можно писать обычным `printf ... > file`.
+  //   • "$secret:<сервер>/<заголовок>" — синтаксис GigaCode, в opencode НЕ
+  //     работает: строка уйдёт в заголовок буквально и сервер ответит 401.
+  //   • Комментарии в этом файле допустимы: opencode читает конфиг как JSONC.
+  //
+  // Диагностика — `opencode mcp list` плюс ~/.local/share/opencode/log/opencode.log.
+  // Два разных диагноза, не путать:
+  //   "Ignoring MCP config entry without type"     — битый конфиг, сервера нет вообще;
+  //   "server unavailable ... status=failed"       — конфиг ок, отвалилась авторизация
+  //                                                  или сеть. Что именно ответил сервер,
+  //                                                  лог не покажет — проверяйте curl'ом
+  //                                                  с методом initialize.
+  // ───────────────────────────────────────────────────────────────────────────
+  // "mcp": {
+    // --- Публичные remote-серверы, авторизация не нужна ---------------------
+  //   "context7": {
+  //     "type": "remote",
+  //     "url": "https://mcp.context7.com/mcp",
+  //     "enabled": true
+  //   },
+    // --- Внутренний поиск по документации (за эндпоинтом LiteLLM) -----------
+    // ПЕРЕД включением создайте файл с токеном — в конфиг секрет не попадает:
+    //   printf 'Bearer sk-ВАШ_КЛЮЧ' > ~/.getdocs-token && chmod 600 ~/.getdocs-token
+    //
+    // Ключ — LiteLLM virtual key (https://models.test.sbt/ui/), обязан начинаться с "sk-". Частые ошибки:
+    //   плейсхолдер или чужой формат → 401 {"detail":"LiteLLM Virtual Key expected,
+    //                                       expected to start with 'sk-'"}
+    //   значение без "Bearer "       → 401 {"detail":"Ensure Key has `Bearer ` prefix"}
+    // Зашифрованный блоб вида keyid:iv:ciphertext из хранилища GigaCode
+    // (~/.gigacode/mcp-secrets-v1.json) сюда НЕ подходит — opencode его не расшифрует.
+    //
+    // "oauth": false обязателен: иначе opencode считает remote-сервер
+    // OAuth-совместимым и уходит в авто-детект вместо статичного заголовка.
+  //   "getdocs": {
+  //     "type": "remote",
+  //     "url": "https://services.test.sbt/eliza/openai/Documentation/mcp",
+  //     "headers": {
+  //       "Authorization": "{file:~/.getdocs-token}" // тут внимательно, или убирайте MCP или заполняйте креды в корне файл и содержание Bearer sk-xyz
+  //     },
+  //     "oauth": false,
+  //     "enabled": false,
+  //     "timeout": 30000
+  //   }python3 "$SKILL_DIR"/scripts/guru_doctor.py
+  // },
+
+  // Какие MCP-инструменты видны агентам по умолчанию.
+  // ВАЖНО: имя пишется С МАСКОЙ — "<сервер>_*", а не "<сервер>". Инструменты
+  // именуются <сервер>_<инструмент>, и запись без маски просто ни во что не попадёт.
+  // Точечно переопределить набор для конкретного агента можно в его блоке "agent".
+  // "tools": {
+  //   "context7_*": false,
+  //   "gh_grep_*": false,
+  //   "notion_*": true,
+  //   "memory_banks_*": false,
+  //   "mcp_everything_*": false,
+  //   "sequentialthinking_*": true,
+  //   "getdocs_*": true
+  // }
+}

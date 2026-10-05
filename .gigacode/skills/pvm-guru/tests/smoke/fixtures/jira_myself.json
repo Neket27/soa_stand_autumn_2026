@@ -1,0 +1,7 @@
+{
+  "name": "smoke.user",
+  "key": "JIRAUSER10000",
+  "displayName": "Smoke User",
+  "emailAddress": "smoke.user@smoke.test",
+  "active": true
+}

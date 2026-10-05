@@ -1,0 +1,5 @@
+interface:
+  display_name: "PVM GURU Skill Review and Search"
+  short_description: "Ревью задач и поиск по SWTR, Wiki, SourceControl и локальным источникам"
+  icon: "clipboard-check"
+  color: "#1F7A8C"

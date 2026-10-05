@@ -1,0 +1,10 @@
+{
+  "code": "PVM",
+  "suits": [
+    {"code": "epic", "name": "Эпик", "description": "Эпик (as21)", "icon": "epic"},
+    {"code": "story", "name": "История", "description": "История (as21)", "icon": "story"},
+    {"code": "task", "name": "Задача", "description": "Задача (as21)", "icon": "task"},
+    {"code": "epic_crpv", "name": "Epic", "description": "Epic", "icon": "idea"},
+    {"code": "bug", "name": "Дефект", "description": "Дефект", "icon": "bug"}
+  ]
+}

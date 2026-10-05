@@ -1,0 +1,17 @@
+{
+  "key": "SMOKE-100",
+  "fields": {
+    "summary": "Smoke Jira issue",
+    "status": {"name": "Open"},
+    "issuetype": {"name": "Task"},
+    "priority": {"name": "Medium"},
+    "assignee": {"name": "user.one", "displayName": "User One"},
+    "reporter": {"name": "user.two", "displayName": "User Two"},
+    "created": "2020-01-01T00:00:00.000+0000",
+    "updated": "2020-01-02T00:00:00.000+0000",
+    "labels": ["smoke"],
+    "components": [{"name": "core"}],
+    "comment": {"total": 0, "comments": []},
+    "description": "Synthetic issue description."
+  }
+}

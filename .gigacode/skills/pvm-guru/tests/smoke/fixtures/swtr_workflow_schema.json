@@ -1,0 +1,49 @@
+{
+  "wfSchema": {
+    "code": "SMOKEWF_0000000000001",
+    "name": "SMOKE WORKFLOW v.1",
+    "description": "SMOKEWF_0000000000001"
+  },
+  "wfTransitions": [
+    {
+      "wfAction": {"code": "initAction", "name": "Переход инициализации", "deleted": false, "exists": true},
+      "oldStatus": null,
+      "destStatus": {"code": "SMKOPEN_0000000000001", "name": "OPEN", "deleted": false, "exists": true,
+                     "statusType": {"code": "pause", "name": "Ожидание", "deleted": false}}
+    },
+    {
+      "wfAction": {"code": "SMKAOPEN_000000000001", "name": "Открыто", "deleted": false, "exists": true},
+      "oldStatus": {"code": "SMKCNCL_0000000000001", "name": "CANCELLED", "deleted": false, "exists": true,
+                    "statusType": {"code": "done", "name": "Завершено", "deleted": false}},
+      "destStatus": {"code": "SMKOPEN_0000000000001", "name": "OPEN", "deleted": false, "exists": true,
+                     "statusType": {"code": "pause", "name": "Ожидание", "deleted": false}}
+    },
+    {
+      "wfAction": {"code": "SMKAANLZ_000000000001", "name": "Анализ проблемы", "deleted": false, "exists": true},
+      "oldStatus": {"code": "SMKOPEN_0000000000001", "name": "OPEN", "deleted": false, "exists": true,
+                    "statusType": {"code": "pause", "name": "Ожидание", "deleted": false}},
+      "destStatus": {"code": "SMKANLZ_0000000000001", "name": "PROBLEM ANALYSIS", "deleted": false, "exists": true,
+                     "statusType": {"code": "progress", "name": "В работе", "deleted": false}}
+    },
+    {
+      "wfAction": {"code": "SMKADONE_000000000001", "name": "Завершить", "deleted": false, "exists": true},
+      "oldStatus": {"code": "SMKANLZ_0000000000001", "name": "PROBLEM ANALYSIS", "deleted": false, "exists": true,
+                    "statusType": {"code": "progress", "name": "В работе", "deleted": false}},
+      "destStatus": {"code": "SMKRSLV_0000000000001", "name": "RESOLVED", "deleted": false, "exists": true,
+                     "statusType": {"code": "done", "name": "Завершено", "deleted": false}}
+    },
+    {
+      "wfAction": {"code": "SMKACNCL_000000000001", "name": "Отменить", "deleted": false, "exists": true},
+      "oldStatus": {"code": "SMKOPEN_0000000000001", "name": "OPEN", "deleted": false, "exists": true,
+                    "statusType": {"code": "pause", "name": "Ожидание", "deleted": false}},
+      "destStatus": {"code": "SMKCNCL_0000000000001", "name": "CANCELLED", "deleted": false, "exists": true,
+                     "statusType": {"code": "done", "name": "Завершено", "deleted": false}}
+    }
+  ],
+  "wfSchemaStatuses": [
+    {"wfStatus": {"code": "SMKOPEN_0000000000001", "name": "OPEN"}, "wfStatusMetadata": null},
+    {"wfStatus": {"code": "SMKANLZ_0000000000001", "name": "PROBLEM ANALYSIS"}, "wfStatusMetadata": null},
+    {"wfStatus": {"code": "SMKRSLV_0000000000001", "name": "RESOLVED"}, "wfStatusMetadata": null},
+    {"wfStatus": {"code": "SMKCNCL_0000000000001", "name": "CANCELLED"}, "wfStatusMetadata": null}
+  ]
+}

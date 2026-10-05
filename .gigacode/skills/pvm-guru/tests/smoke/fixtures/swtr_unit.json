@@ -1,0 +1,27 @@
+{
+  "code": "SMOKE-1",
+  "summary": "Smoke test unit summary",
+  "description": "A synthetic SWTR unit used only by the offline smoke suite. No real data. Approval: https://sberworks.ru/wiki/display/SMOKE/Page ; reference: https://example.org/spec.pdf",
+  "space": "SMOKE",
+  "suit": "task",
+  "createdAt": "2020-01-01T00:00:00Z",
+  "updatedAt": "2020-01-02T00:00:00Z",
+  "attributes": [
+    {
+      "attribute": {
+        "code": "status",
+        "name": "Status",
+        "type": "string"
+      },
+      "value": "open"
+    },
+    {
+      "attribute": {
+        "code": "priority",
+        "name": "Priority",
+        "type": "string"
+      },
+      "value": "medium"
+    }
+  ]
+}

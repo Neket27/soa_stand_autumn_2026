@@ -1,0 +1,18 @@
+{
+  "content": [
+    {
+      "unitCommentCode": "SMOKE-C-1",
+      "unitCode": "SMOKE-1",
+      "commentText": "Plain synthetic smoke comment.",
+      "createdBy": {"login": "user.one", "firstName": "User", "lastName": "One"},
+      "createdAt": "2020-01-01T00:00:00Z",
+      "updatedBy": {"login": "user.one", "firstName": "User", "lastName": "One"},
+      "updatedAt": "2020-01-01T00:00:00Z",
+      "deleted": false
+    }
+  ],
+  "pageSize": 100,
+  "hasNext": false,
+  "pageNumber": 0,
+  "totalElements": 1
+}

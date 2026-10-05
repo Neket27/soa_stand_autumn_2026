@@ -1,0 +1,10 @@
+{
+  "total": 1,
+  "comments": [
+    {
+      "author": {"name": "user.one", "displayName": "User One"},
+      "created": "2020-01-01T00:00:00.000+0000",
+      "body": "Synthetic smoke comment."
+    }
+  ]
+}

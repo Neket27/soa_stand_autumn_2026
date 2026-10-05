@@ -1,0 +1,13 @@
+{
+  "code": "task",
+  "name": "Задача",
+  "baseAttributes": [{"code": "summary"}, {"code": "description"}],
+  "attributes": [
+    {"code": "priority", "name": "Приоритет", "type": "taxonomy", "directoryValues": []},
+    {"code": "fix_version", "name": "Fix Version", "type": "version", "directoryValues": []},
+    {"code": "affects_version", "name": "Affects Version", "type": "version", "directoryValues": []},
+    {"code": "sber_component", "name": "Компонент", "type": "sber_component", "directoryValues": []},
+    {"code": "customfield_24900", "name": "Код продукта", "type": "taxonomy",
+     "directoryValues": [{"code": "273841", "name": "OPM"}, {"code": "281924", "name": "#AM"}]}
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "wfSchemaDto": {
+    "code": "SMOKEWF_0000000000001",
+    "name": "SMOKE WORKFLOW v.1",
+    "description": "SMOKEWF_0000000000001"
+  },
+  "currentStatus": {
+    "code": "SMKCNCL_0000000000001",
+    "name": "CANCELLED",
+    "deleted": false,
+    "exists": true,
+    "statusType": {
+      "code": "done",
+      "name": "Завершено",
+      "deleted": false
+    }
+  },
+  "availableActions": [
+    {
+      "code": "SMKAOPEN_000000000001",
+      "name": "Открыто",
+      "deleted": false,
+      "exists": true
+    }
+  ],
+  "actionsExcludedByCondition": []
+}

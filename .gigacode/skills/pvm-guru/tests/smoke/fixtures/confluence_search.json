@@ -1,0 +1,13 @@
+{
+  "results": [
+    {
+      "id": "1001",
+      "title": "Smoke Confluence Page",
+      "type": "page",
+      "space": {"key": "SMK", "name": "Smoke Space", "id": "200"},
+      "version": {"number": 3},
+      "_links": {"webui": "/pages/1001"}
+    }
+  ],
+  "size": 1
+}
