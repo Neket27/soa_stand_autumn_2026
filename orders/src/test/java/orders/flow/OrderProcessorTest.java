@@ -87,7 +87,8 @@ class OrderProcessorTest {
                 .thenReturn(PaymentClient.ChargeResult.CHARGED);
 
         assertTrue(processor.processUntilTerminal("order-1", "[]", Duration.ofSeconds(5)));
-        verify(paymentClient).hasCharges(eq("order-1"), any(Duration.class));
+        // POST-first: no reconciliation GET before/without a NETWORK outcome
+        verify(paymentClient, never()).hasCharges(eq("order-1"), any(Duration.class));
         verify(paymentClient).charge(eq("order-1"), eq(1000L), any(Duration.class));
         verify(orderRepository).transition("order-1", "paid");
     }
@@ -142,12 +143,13 @@ class OrderProcessorTest {
         when(paymentClient.charge(anyString(), anyLong(), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.NETWORK);
         when(paymentClient.hasCharges(eq("order-4"), any(Duration.class)))
-                .thenReturn(false).thenReturn(true);
+                .thenReturn(true);
         when(orderRepository.transition("order-4", "paid")).thenReturn(1);
 
         assertTrue(processor.processUntilTerminal("order-4", "[]", Duration.ofSeconds(5)));
         verify(paymentClient).charge(eq("order-4"), eq(1000L), any(Duration.class));
-        verify(paymentClient, times(2)).hasCharges(eq("order-4"), any(Duration.class));
+        // reconciliation GET happens exactly once — after the NETWORK outcome
+        verify(paymentClient, times(1)).hasCharges(eq("order-4"), any(Duration.class));
         verify(orderRepository).transition("order-4", "paid");
     }
 
@@ -163,20 +165,26 @@ class OrderProcessorTest {
 
         assertTrue(processor.processUntilTerminal("order-5", "[]", Duration.ofSeconds(5)));
         verify(paymentClient).charge(eq("order-5"), eq(1000L), any(Duration.class));
+        // single reconciliation GET after the NETWORK outcome
+        verify(paymentClient, times(1)).hasCharges(eq("order-5"), any(Duration.class));
         // breaker should be OPEN after NETWORK with no charge found
         assertEquals(PaymentCircuitBreaker.State.OPEN, circuitBreaker.getState());
     }
 
     @Test
-    void processUntilTerminal_hasChargesFirst_returnsTrue() {
+    void processUntilTerminal_idempotentChargeFound_returnsTrue() {
+        // A charge executed in a previous attempt (response lost) is found by
+        // the idempotent POST itself: same Idempotency-Key and body -> 200,
+        // which PaymentClient maps to CHARGED. No reconciliation GET needed.
         OrderRepository.Order order = new OrderRepository.Order("order-9", "user", "pending", 1000, "[]");
         when(orderRepository.findById("order-9")).thenReturn(order);
-        when(paymentClient.hasCharges(eq("order-9"), any(Duration.class))).thenReturn(true);
+        when(paymentClient.charge(eq("order-9"), eq(1000L), any(Duration.class)))
+                .thenReturn(PaymentClient.ChargeResult.CHARGED);
         when(orderRepository.transition("order-9", "paid")).thenReturn(1);
 
         assertTrue(processor.processUntilTerminal("order-9", "[]", Duration.ofSeconds(5)));
-        // Should not call charge — hasCharges found it already
-        verify(paymentClient, never()).charge(eq("order-9"), anyLong(), any(Duration.class));
+        verify(paymentClient, times(1)).charge(eq("order-9"), eq(1000L), any(Duration.class));
+        verify(paymentClient, never()).hasCharges(eq("order-9"), any(Duration.class));
         verify(orderRepository).transition("order-9", "paid");
     }
 

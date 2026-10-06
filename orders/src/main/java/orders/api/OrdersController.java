@@ -56,10 +56,8 @@ public class OrdersController {
         Duration budget = Duration.ofMillis(900);
         String result = orderProcessor.processOnce(orderId, amountCents, itemsJson, budget);
 
-        if ("PAID".equals(result)) {
-            orderRepository.transition(orderId, "paid");
-            return ResponseEntity.status(201).body(new OrderCreated(orderId, "paid"));
-        }
+        // processOnce returns only REJECTED (reserve not taken) or PENDING
+        // (reserve taken, outcome decided by the background worker).
         if ("REJECTED".equals(result)) {
             orderRepository.transition(orderId, "rejected");
             return ResponseEntity.status(201).body(new OrderCreated(orderId, "rejected"));

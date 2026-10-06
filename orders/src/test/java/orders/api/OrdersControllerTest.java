@@ -81,7 +81,7 @@ class OrdersControllerTest {
                 """;
 
         when(orderRepository.insertPending(anyString(), anyList(), anyLong())).thenReturn("order-1");
-        when(orderProcessor.processOnce(eq("order-1"), eq(99800L), anyString(), any())).thenReturn("INCOMPLETE");
+        when(orderProcessor.processOnce(eq("order-1"), eq(99800L), anyString(), any())).thenReturn("PENDING");
 
         mockMvc.perform(post("/orders")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -91,26 +91,6 @@ class OrdersControllerTest {
                 .andExpect(jsonPath("$.status").value("pending"));
 
         verify(backgroundWorker).enqueue("order-1");
-    }
-
-    @Test
-    void createOrder_paid_returns201Paid() throws Exception {
-        String body = """
-                {"user_id":"u-1","items":[{"sku":"sku-1","qty":1,"price_cents":1000}]}
-                """;
-
-        when(orderRepository.insertPending(anyString(), anyList(), anyLong())).thenReturn("order-2");
-        when(orderProcessor.processOnce(eq("order-2"), eq(1000L), anyString(), any())).thenReturn("PAID");
-        when(orderRepository.transition("order-2", "paid")).thenReturn(1);
-
-        mockMvc.perform(post("/orders")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.id").value("order-2"))
-                .andExpect(jsonPath("$.status").value("paid"));
-
-        verify(backgroundWorker, never()).enqueue(anyString());
     }
 
     @Test

@@ -20,22 +20,29 @@ public class BackgroundWorker {
     private final OrderRepository orderRepository;
     private final OrderProcessor orderProcessor;
     private final PaymentCircuitBreaker circuitBreaker;
-    private final BlockingQueue<String> queue = new LinkedBlockingQueue<>();
-    private final Map<String, Boolean> inFlight = new ConcurrentHashMap<>();
+    final BlockingQueue<String> queue = new LinkedBlockingQueue<>();
+    final Map<String, Boolean> inFlight = new ConcurrentHashMap<>();
     private static final int NUM_WORKERS = 8;
     private static final Duration MAX_DEADLINE = Duration.ofSeconds(25);
 
     public BackgroundWorker(OrderRepository orderRepository,
                             OrderProcessor orderProcessor,
                             PaymentCircuitBreaker circuitBreaker) {
+        this(orderRepository, orderProcessor, circuitBreaker, NUM_WORKERS);
+    }
+
+    BackgroundWorker(OrderRepository orderRepository,
+                     OrderProcessor orderProcessor,
+                     PaymentCircuitBreaker circuitBreaker,
+                     int numWorkers) {
         this.orderRepository = orderRepository;
         this.orderProcessor = orderProcessor;
         this.circuitBreaker = circuitBreaker;
-        startWorkers();
+        startWorkers(numWorkers);
     }
 
-    private void startWorkers() {
-        for (int i = 0; i < NUM_WORKERS; i++) {
+    private void startWorkers(int numWorkers) {
+        for (int i = 0; i < numWorkers; i++) {
             Thread t = new Thread(this::workerLoop, "bg-worker-" + i);
             t.setDaemon(true);
             t.start();
@@ -51,7 +58,11 @@ public class BackgroundWorker {
                 Thread.currentThread().interrupt();
                 break;
             }
-            inFlight.put(orderId, Boolean.TRUE);
+            // Single-flight: only the first pickup of a duplicate queue entry
+            // processes the order; the second worker drops it.
+            if (inFlight.putIfAbsent(orderId, Boolean.TRUE) != null) {
+                continue;
+            }
             try {
                 log.info("BackgroundWorker processing {}", orderId);
                 OrderRepository.Order order = orderRepository.findById(orderId);
@@ -76,8 +87,11 @@ public class BackgroundWorker {
         if (circuitBreaker.getState() == PaymentCircuitBreaker.State.OPEN) {
             return;
         }
+        // The in-flight mark is owned by the worker (set in workerLoop via
+        // putIfAbsent); the reaper only checks it, so a duplicate enqueued
+        // here is dropped by the second pickup instead of double-processed.
         for (String orderId : orderRepository.findPendingIds()) {
-            if (inFlight.putIfAbsent(orderId, Boolean.TRUE) == null) {
+            if (!inFlight.containsKey(orderId)) {
                 queue.offer(orderId);
             }
         }

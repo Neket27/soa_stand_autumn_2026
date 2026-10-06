@@ -57,22 +57,14 @@ public class OrderProcessor {
                 continue;
             }
 
-            // Check if charge already exists (from a previous attempt).
-            // hasCharges is a GET — the mock applies no latency to it.
-            boolean hasCharge = paymentClient.hasCharges(orderId, Duration.ofSeconds(1));
-            if (hasCharge) {
-                circuitBreaker.onSuccess();
-                if (orderRepository.transition(orderId, "paid") > 0) return true;
-                OrderRepository.Order current = orderRepository.findById(orderId);
-                if (current != null && ("paid".equals(current.status()) || "rejected".equals(current.status()))) {
-                    return true;
-                }
-                continue;
-            }
-
+            // POST-first: no pre-charge GET. A charge executed in a previous
+            // attempt is discovered by the idempotent POST itself — same
+            // Idempotency-Key and body, Payment answers 200 for the same
+            // charge. The reconciliation GET runs only after an indeterminate
+            // outcome (NETWORK), where "no response" != "no charge".
             // Charge with 1s timeout. In S3 the mock latency (2s) is longer,
             // so the charge times out on the client side — but the mock records
-            // the charge on receipt, and hasCharges finds it on the next step.
+            // the charge on receipt, and reconciliation finds it in the NETWORK branch.
             PaymentClient.ChargeResult chargeResult = paymentClient.charge(orderId, order.amountCents(), Duration.ofSeconds(1));
 
             switch (chargeResult) {
