@@ -3,6 +3,7 @@ package orders.store;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import orders.api.dto.Item;
+import orders.flow.OrderStatus;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
@@ -53,10 +54,10 @@ public class OrderRepository {
         return id;
     }
 
-    public int transition(String id, String toStatus) {
+    public int transition(String id, OrderStatus to) {
         return jdbcTemplate.update(
                 "UPDATE orders SET status = ? WHERE id = ? AND status = 'pending'",
-                toStatus, id);
+                to.value(), id);
     }
 
     public Order findById(String id) {
@@ -78,6 +79,15 @@ public class OrderRepository {
     public List<String> findPendingIds() {
         return jdbcTemplate.queryForList(
                 "SELECT id FROM orders WHERE status = 'pending' ORDER BY created_at", String.class);
+    }
+
+    /** True when the database is reachable — the service is ready to accept orders. */
+    public boolean isReady() {
+        try {
+            return jdbcTemplate.queryForObject("SELECT 1", Integer.class) != null;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     public static record Order(String id, String userId, String status, long amountCents, String itemsJson) {}

@@ -7,7 +7,6 @@ import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
@@ -24,20 +23,18 @@ class BackgroundWorkerTest {
     void duplicateQueueEntry_processedOnce() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         CountDownLatch holdOrder = new CountDownLatch(1);
-        OrderProcessor processor = mock(OrderProcessor.class);
-        when(orderRepository.findById("order-1"))
-                .thenReturn(new OrderRepository.Order("order-1", "user", "pending", 1000, "[]"));
+        OrderFulfiller fulfiller = mock(OrderFulfiller.class);
         doAnswer(inv -> {
             calls.incrementAndGet();
             holdOrder.await(5, TimeUnit.SECONDS);
             return true;
-        }).when(processor).processUntilTerminal(eq("order-1"), anyString(), any(Duration.class));
+        }).when(fulfiller).fulfill(eq("order-1"), any(Duration.class));
 
-        BackgroundWorker worker = new BackgroundWorker(orderRepository, processor, circuitBreaker, 2, 5000);
+        BackgroundWorker worker = new BackgroundWorker(orderRepository, fulfiller, circuitBreaker, 2, 5000);
         worker.enqueue("order-1");
         worker.enqueue("order-1");
 
-        // One worker is blocked in processUntilTerminal, the other must drop
+        // One worker is blocked in fulfill, the other must drop
         // the duplicate entry instead of processing the order a second time.
         Thread.sleep(300);
         assertEquals(1, calls.get());
@@ -49,8 +46,8 @@ class BackgroundWorkerTest {
 
     @Test
     void reaper_skipsInFlightOrder() {
-        OrderProcessor processor = mock(OrderProcessor.class);
-        BackgroundWorker worker = new BackgroundWorker(orderRepository, processor, circuitBreaker, 0, 5000);
+        OrderFulfiller fulfiller = mock(OrderFulfiller.class);
+        BackgroundWorker worker = new BackgroundWorker(orderRepository, fulfiller, circuitBreaker, 0, 5000);
         worker.inFlight.put("order-2", Boolean.TRUE);
         when(orderRepository.findPendingIds()).thenReturn(List.of("order-2"));
 
@@ -61,8 +58,8 @@ class BackgroundWorkerTest {
 
     @Test
     void reaper_enqueuesPendingOrder_withoutMarkingInFlight() {
-        OrderProcessor processor = mock(OrderProcessor.class);
-        BackgroundWorker worker = new BackgroundWorker(orderRepository, processor, circuitBreaker, 0, 5000);
+        OrderFulfiller fulfiller = mock(OrderFulfiller.class);
+        BackgroundWorker worker = new BackgroundWorker(orderRepository, fulfiller, circuitBreaker, 0, 5000);
         when(orderRepository.findPendingIds()).thenReturn(List.of("order-3"));
 
         worker.reaper();

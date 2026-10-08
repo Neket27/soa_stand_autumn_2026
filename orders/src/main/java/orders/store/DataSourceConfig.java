@@ -1,62 +1,61 @@
 package orders.store;
 
-import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
 import java.net.URI;
 
+/**
+ * Converts the stand-provided DATABASE_URL (Heroku form
+ * postgres://user:pass@host:port/db?query) into a JDBC data source.
+ * JdbcTemplate is auto-configured by Spring Boot from this single DataSource.
+ */
 @Configuration
 @ConditionalOnProperty(name = "DATABASE_URL")
 public class DataSourceConfig {
 
     @Bean
-    public DataSource dataSource(@Value("${DATABASE_URL}") String databaseUrl) throws java.net.URISyntaxException {
-        // DATABASE_URL format: postgres://user:pass@host:port/db?sslmode=disable
-        // Parse it as a URI: postgres://user:pass@host:port/db
-        URI uri = new URI(databaseUrl);
-        String host = uri.getHost();
-        int port = uri.getPort();
-        String path = uri.getPath();
-        String query = uri.getQuery();
+    public DataSource dataSource(@Value("${DATABASE_URL}") String databaseUrl) {
+        ParsedUrl parsed = databaseUrl(databaseUrl);
 
-        // Extract user:pass from userInfo
-        String userInfo = uri.getUserInfo();
+        HikariDataSource dataSource = new HikariDataSource();
+        dataSource.setJdbcUrl(parsed.jdbcUrl());
+        dataSource.setUsername(parsed.user());
+        dataSource.setPassword(parsed.password());
+        dataSource.setConnectionTimeout(5000);
+        return dataSource;
+    }
+
+    /**
+     * postgres://user:pass@host:port/db?query ->
+     * jdbc:postgresql://host:port/db?query + user + password.
+     */
+    static ParsedUrl databaseUrl(String databaseUrl) {
+        URI uri = URI.create(databaseUrl);
+        String jdbcUrl = String.format("jdbc:postgresql://%s:%d%s",
+                uri.getHost(), uri.getPort(), uri.getPath());
+        if (uri.getQuery() != null && !uri.getQuery().isEmpty()) {
+            jdbcUrl += "?" + uri.getQuery();
+        }
+
         String user = "";
-        String pass = "";
-        if (userInfo != null && userInfo.contains(":")) {
+        String password = "";
+        String userInfo = uri.getUserInfo();
+        if (userInfo != null) {
             int colonIdx = userInfo.indexOf(':');
-            user = userInfo.substring(0, colonIdx);
-            pass = userInfo.substring(colonIdx + 1);
-        } else if (userInfo != null) {
-            user = userInfo;
+            if (colonIdx >= 0) {
+                user = userInfo.substring(0, colonIdx);
+                password = userInfo.substring(colonIdx + 1);
+            } else {
+                user = userInfo;
+            }
         }
-
-        // Build jdbc:postgresql://host:port/db
-        String jdbcUrl = String.format("jdbc:postgresql://%s:%d%s", host, port, path);
-        if (query != null && !query.isEmpty()) {
-            jdbcUrl += "?" + query;
-        }
-
-        HikariConfig config = new HikariConfig();
-        config.setJdbcUrl(jdbcUrl);
-        config.setUsername(user);
-        config.setPassword(pass);
-        config.setMaximumPoolSize(5);
-        config.setMinimumIdle(1);
-        config.setConnectionTimeout(5000);
-
-        return new HikariDataSource(config);
+        return new ParsedUrl(jdbcUrl, user, password);
     }
 
-    @Bean
-    public JdbcTemplate jdbcTemplate(@Qualifier("dataSource") DataSource dataSource) {
-        return new JdbcTemplate(dataSource);
-    }
+    record ParsedUrl(String jdbcUrl, String user, String password) {}
 }

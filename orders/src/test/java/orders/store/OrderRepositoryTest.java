@@ -1,6 +1,7 @@
 package orders.store;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import orders.flow.OrderStatus;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -59,7 +60,7 @@ class OrderRepositoryTest {
         String id = repository.insertPending("user-1", List.of(
                 new orders.api.dto.Item("sku-1", 1, 1000)), 1000);
 
-        int updated = repository.transition(id, "paid");
+        int updated = repository.transition(id, OrderStatus.PAID);
         assertEquals(1, updated);
 
         OrderRepository.Order order = repository.findById(id);
@@ -67,14 +68,26 @@ class OrderRepositoryTest {
     }
 
     @Test
+    void transition_usesLowercaseValue() {
+        String id = repository.insertPending("user-1", List.of(
+                new orders.api.dto.Item("sku-1", 1, 1000)), 1000);
+
+        repository.transition(id, OrderStatus.PAID);
+
+        String stored = jdbcTemplate.queryForObject(
+                "SELECT status FROM orders WHERE id = ?", String.class, id);
+        assertEquals("paid", stored);
+    }
+
+    @Test
     void transition_onlyOnce() {
         String id = repository.insertPending("user-1", List.of(
                 new orders.api.dto.Item("sku-1", 1, 1000)), 1000);
 
-        int first = repository.transition(id, "paid");
+        int first = repository.transition(id, OrderStatus.PAID);
         assertEquals(1, first);
 
-        int second = repository.transition(id, "rejected");
+        int second = repository.transition(id, OrderStatus.REJECTED);
         assertEquals(0, second);
     }
 
@@ -96,7 +109,7 @@ class OrderRepositoryTest {
         String id = repository.insertPending("user-1", List.of(
                 new orders.api.dto.Item("sku-1", 1, 1000)), 1000);
 
-        repository.transition(id, "paid");
+        repository.transition(id, OrderStatus.PAID);
 
         List<String> pending = repository.findPendingIds();
         assertTrue(pending.isEmpty());
@@ -106,5 +119,10 @@ class OrderRepositoryTest {
     void findByIdNotFound() {
         OrderRepository.Order order = repository.findById("nonexistent-id");
         assertNull(order);
+    }
+
+    @Test
+    void isReady_liveDatabase_returnsTrue() {
+        assertTrue(repository.isReady());
     }
 }

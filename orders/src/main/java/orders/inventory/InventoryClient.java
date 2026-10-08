@@ -2,6 +2,7 @@ package orders.inventory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import orders.api.dto.Item;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -12,6 +13,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 
 @Service
 public class InventoryClient {
@@ -33,12 +35,12 @@ public class InventoryClient {
                 .build();
     }
 
-    public boolean reserve(String orderId, String itemsJson, Duration timeout) {
+    public boolean reserve(String orderId, List<Item> items, Duration timeout) {
         String body;
         try {
             ObjectNode root = objectMapper.createObjectNode();
             root.put("order_id", orderId);
-            root.set("items", objectMapper.readTree(itemsJson));
+            root.set("items", objectMapper.valueToTree(items));
             body = objectMapper.writeValueAsString(root);
         } catch (Exception e) {
             throw new RuntimeException("failed to serialize reserve request", e);

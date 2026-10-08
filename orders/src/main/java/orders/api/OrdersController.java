@@ -1,87 +1,40 @@
 package orders.api;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
-import orders.api.dto.Error;
-import orders.api.dto.Item;
+import lombok.RequiredArgsConstructor;
 import orders.api.dto.Order;
 import orders.api.dto.OrderCreated;
 import orders.api.dto.OrderRequest;
-import orders.flow.BackgroundWorker;
-import orders.flow.OrderProcessor;
+import orders.flow.CreateOrderService;
 import orders.store.OrderRepository;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.Duration;
-import java.util.List;
-
 @RestController
+@RequiredArgsConstructor
 public class OrdersController {
 
     private final OrderRepository orderRepository;
-    private final OrderProcessor orderProcessor;
-    private final BackgroundWorker backgroundWorker;
-    private final ObjectMapper objectMapper;
-    private final long budgetMs;
-
-    public OrdersController(OrderRepository orderRepository,
-                            OrderProcessor orderProcessor,
-                            BackgroundWorker backgroundWorker,
-                            ObjectMapper objectMapper,
-                            @Value("${orders.process.budget-ms:900}") long budgetMs) {
-        this.orderRepository = orderRepository;
-        this.orderProcessor = orderProcessor;
-        this.backgroundWorker = backgroundWorker;
-        this.objectMapper = objectMapper;
-        this.budgetMs = budgetMs;
-    }
+    private final CreateOrderService createOrderService;
+    private final OrderQueryService orderQueryService;
 
     @GetMapping("/healthz")
     public ResponseEntity<Void> healthz() {
-        return ResponseEntity.ok().build();
+        return orderRepository.isReady()
+                ? ResponseEntity.ok().build()
+                : ResponseEntity.status(503).build();
     }
 
     @PostMapping("/orders")
-    public ResponseEntity<?> createOrder(@Valid @RequestBody OrderRequest request) {
-        long amountCents = 0;
-        for (Item item : request.items()) {
-            amountCents += (long) item.qty() * item.priceCents();
-        }
-
-        String itemsJson = buildItemsJson(request.items());
-
-        String orderId = orderRepository.insertPending(request.user_id(), request.items(), amountCents);
-
-        Duration budget = Duration.ofMillis(budgetMs);
-        String result = orderProcessor.processOnce(orderId, amountCents, itemsJson, budget);
-
-        // processOnce returns only REJECTED (reserve not taken) or PENDING
-        // (reserve taken, outcome decided by the background worker).
-        if ("REJECTED".equals(result)) {
-            orderRepository.transition(orderId, "rejected");
-            return ResponseEntity.status(201).body(new OrderCreated(orderId, "rejected"));
-        }
-        backgroundWorker.enqueue(orderId);
-        return ResponseEntity.status(201).body(new OrderCreated(orderId, "pending"));
+    @ResponseStatus(HttpStatus.CREATED)
+    public OrderCreated createOrder(@Valid @RequestBody OrderRequest request) {
+        CreateOrderService.CreateResult result = createOrderService.createOrder(request);
+        return new OrderCreated(result.orderId(), result.status().value());
     }
 
     @GetMapping("/orders/{id}")
-    public ResponseEntity<Order> getOrder(@PathVariable String id) {
-        OrderRepository.Order order = orderRepository.findById(id);
-        if (order == null) {
-            return ResponseEntity.notFound().build();
-        }
-        return ResponseEntity.ok(new Order(order.id(), order.status(), order.amountCents()));
-    }
-
-    private String buildItemsJson(List<Item> items) {
-        try {
-            return objectMapper.writeValueAsString(items);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException("failed to serialize items", e);
-        }
+    public Order getOrder(@PathVariable String id) {
+        return orderQueryService.getOrder(id);
     }
 }

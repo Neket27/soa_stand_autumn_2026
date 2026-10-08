@@ -1,4 +1,7 @@
 package orders.api.dto;
 
-public record Order(String id, String status, long amount_cents) {
+import com.fasterxml.jackson.annotation.JsonProperty;
+
+public record Order(String id, String status,
+                    @JsonProperty("amount_cents") long amountCents) {
 }

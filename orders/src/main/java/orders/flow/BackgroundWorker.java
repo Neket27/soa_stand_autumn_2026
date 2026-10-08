@@ -22,7 +22,7 @@ public class BackgroundWorker {
     private static final Logger log = LoggerFactory.getLogger(BackgroundWorker.class);
 
     private final OrderRepository orderRepository;
-    private final OrderProcessor orderProcessor;
+    private final OrderFulfiller orderFulfiller;
     private final PaymentCircuitBreaker circuitBreaker;
     private final long deadlineMs;
     final BlockingQueue<String> queue = new LinkedBlockingQueue<>();
@@ -31,12 +31,12 @@ public class BackgroundWorker {
     private final List<Thread> workers = new CopyOnWriteArrayList<>();
 
     public BackgroundWorker(OrderRepository orderRepository,
-                            OrderProcessor orderProcessor,
+                            OrderFulfiller orderFulfiller,
                             PaymentCircuitBreaker circuitBreaker,
                             @Value("${orders.worker.count:8}") int workerCount,
                             @Value("${orders.worker.deadline-ms:25000}") long deadlineMs) {
         this.orderRepository = orderRepository;
-        this.orderProcessor = orderProcessor;
+        this.orderFulfiller = orderFulfiller;
         this.circuitBreaker = circuitBreaker;
         this.workerCount = workerCount;
         this.deadlineMs = deadlineMs;
@@ -68,10 +68,8 @@ public class BackgroundWorker {
             }
             try {
                 log.info("BackgroundWorker processing {}", orderId);
-                OrderRepository.Order order = orderRepository.findById(orderId);
-                String itemsJson = order != null ? order.itemsJson() : "[]";
                 Duration deadline = Duration.ofMillis(deadlineMs);
-                boolean done = orderProcessor.processUntilTerminal(orderId, itemsJson, deadline);
+                boolean done = orderFulfiller.fulfill(orderId, deadline);
                 if (!done) {
                     log.warn("BackgroundWorker deadline exceeded for order {}", orderId);
                 }

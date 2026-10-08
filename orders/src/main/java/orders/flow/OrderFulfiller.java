@@ -10,10 +10,15 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 
+/**
+ * The single charge state machine: drives a pending order to a terminal
+ * status (paid/rejected) using the payment client. The only class that talks
+ * to {@link PaymentClient}.
+ */
 @Service
-public class OrderProcessor {
+public class OrderFulfiller {
 
-    private static final Logger log = LoggerFactory.getLogger(OrderProcessor.class);
+    private static final Logger log = LoggerFactory.getLogger(OrderFulfiller.class);
 
     private final InventoryClient inventoryClient;
     private final PaymentClient paymentClient;
@@ -22,7 +27,7 @@ public class OrderProcessor {
     private final Duration chargeTimeout;
     private final long breakerWaitMs;
 
-    public OrderProcessor(InventoryClient inventoryClient,
+    public OrderFulfiller(InventoryClient inventoryClient,
                           PaymentClient paymentClient,
                           OrderRepository orderRepository,
                           PaymentCircuitBreaker circuitBreaker,
@@ -36,16 +41,7 @@ public class OrderProcessor {
         this.breakerWaitMs = breakerWaitMs;
     }
 
-    public String processOnce(String orderId, long amountCents, String itemsJson, Duration budget) {
-        Duration reserveTimeout = Duration.ofMillis(Math.max(100, budget.toMillis() - 10));
-        boolean reserved = inventoryClient.reserve(orderId, itemsJson, reserveTimeout);
-        if (!reserved) {
-            return "REJECTED";
-        }
-        return "PENDING";
-    }
-
-    public boolean processUntilTerminal(String orderId, String itemsJson, Duration maxDeadline) {
+    public boolean fulfill(String orderId, Duration maxDeadline) {
         long deadline = System.currentTimeMillis() + maxDeadline.toMillis();
 
         while (System.currentTimeMillis() < deadline) {
@@ -54,7 +50,8 @@ public class OrderProcessor {
                 log.info("order={} not found, stopping", orderId);
                 return false;
             }
-            if ("paid".equals(order.status()) || "rejected".equals(order.status())) {
+            OrderStatus status = OrderStatus.fromValue(order.status());
+            if (status == OrderStatus.PAID || status == OrderStatus.REJECTED) {
                 log.info("order={} already terminal status={}", orderId, order.status());
                 return true;
             }
@@ -88,7 +85,7 @@ public class OrderProcessor {
                 case CHARGED:
                     circuitBreaker.onReachable();
                     log.info("order={} transitioning to paid", orderId);
-                    if (orderRepository.transition(orderId, "paid") > 0) return true;
+                    if (orderRepository.transition(orderId, OrderStatus.PAID) > 0) return true;
                     break;
                 case DECLINED:
                     // 402 is an HTTP answer: Payment is reachable.
@@ -165,11 +162,11 @@ public class OrderProcessor {
     }
 
     private boolean transitionToPaid(String orderId) {
-        return orderRepository.transition(orderId, "paid") > 0;
+        return orderRepository.transition(orderId, OrderStatus.PAID) > 0;
     }
 
     private boolean transitionToRejected(String orderId) {
-        return orderRepository.transition(orderId, "rejected") > 0;
+        return orderRepository.transition(orderId, OrderStatus.REJECTED) > 0;
     }
 
     private boolean release(String orderId) {

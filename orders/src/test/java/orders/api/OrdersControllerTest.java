@@ -1,19 +1,18 @@
 package orders.api;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import orders.flow.BackgroundWorker;
-import orders.flow.OrderProcessor;
+import orders.api.dto.Order;
+import orders.flow.CreateOrderService;
+import orders.flow.OrderStatus;
 import orders.store.OrderRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
-
-import java.util.List;
 
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -23,34 +22,43 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ExtendWith(MockitoExtension.class)
 class OrdersControllerTest {
 
-    private MockMvc mockMvc;
-
     @Mock
     private OrderRepository orderRepository;
 
     @Mock
-    private OrderProcessor orderProcessor;
+    private CreateOrderService createOrderService;
 
     @Mock
-    private BackgroundWorker backgroundWorker;
+    private OrderQueryService orderQueryService;
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
-    private OrdersController controller;
+    private MockMvc mockMvc;
 
-    @org.junit.jupiter.api.BeforeEach
+    @BeforeEach
     void setUp() {
-        controller = new OrdersController(orderRepository, orderProcessor, backgroundWorker, objectMapper, 900);
+        OrdersController controller =
+                new OrdersController(orderRepository, createOrderService, orderQueryService);
         LocalValidatorFactoryBean factory = new LocalValidatorFactoryBean();
         factory.afterPropertiesSet();
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setValidator(factory)
+                .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
 
     @Test
-    void healthz_returns200() throws Exception {
+    void healthz_dbReady_returns200() throws Exception {
+        when(orderRepository.isReady()).thenReturn(true);
+
         mockMvc.perform(get("/healthz"))
-                .andExpect(status().is2xxSuccessful());
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void healthz_dbDown_returns503() throws Exception {
+        when(orderRepository.isReady()).thenReturn(false);
+
+        mockMvc.perform(get("/healthz"))
+                .andExpect(status().isServiceUnavailable());
     }
 
     @Test
@@ -78,13 +86,13 @@ class OrdersControllerTest {
     }
 
     @Test
-    void createOrder_incomplete_returns201Pending() throws Exception {
+    void createOrder_pending_returns201Pending() throws Exception {
         String body = """
                 {"user_id":"u-1","items":[{"sku":"sku-1","qty":2,"price_cents":49900}]}
                 """;
 
-        when(orderRepository.insertPending(anyString(), anyList(), anyLong())).thenReturn("order-1");
-        when(orderProcessor.processOnce(anyString(), eq(99800L), anyString(), any())).thenReturn("PENDING");
+        when(createOrderService.createOrder(any()))
+                .thenReturn(new CreateOrderService.CreateResult("order-1", OrderStatus.PENDING));
 
         mockMvc.perform(post("/orders")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -92,8 +100,6 @@ class OrdersControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.id").value("order-1"))
                 .andExpect(jsonPath("$.status").value("pending"));
-
-        verify(backgroundWorker).enqueue("order-1");
     }
 
     @Test
@@ -102,9 +108,8 @@ class OrdersControllerTest {
                 {"user_id":"u-1","items":[{"sku":"sku-1","qty":1,"price_cents":1000}]}
                 """;
 
-        when(orderRepository.insertPending(anyString(), anyList(), anyLong())).thenReturn("order-3");
-        when(orderProcessor.processOnce(anyString(), eq(1000L), anyString(), any())).thenReturn("REJECTED");
-        when(orderRepository.transition(anyString(), eq("rejected"))).thenReturn(1);
+        when(createOrderService.createOrder(any()))
+                .thenReturn(new CreateOrderService.CreateResult("order-3", OrderStatus.REJECTED));
 
         mockMvc.perform(post("/orders")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -116,8 +121,8 @@ class OrdersControllerTest {
 
     @Test
     void getOrder_found_returns200() throws Exception {
-        OrderRepository.Order order = new OrderRepository.Order("order-1", "u-1", "paid", 99800, "[]");
-        when(orderRepository.findById("order-1")).thenReturn(order);
+        when(orderQueryService.getOrder("order-1"))
+                .thenReturn(new Order("order-1", "paid", 99800));
 
         mockMvc.perform(get("/orders/order-1"))
                 .andExpect(status().isOk())
@@ -127,25 +132,13 @@ class OrdersControllerTest {
     }
 
     @Test
-    void getOrder_notFound_returns404() throws Exception {
-        when(orderRepository.findById("nonexistent")).thenReturn(null);
+    void getOrder_notFound_returns404WithErrorBody() throws Exception {
+        when(orderQueryService.getOrder("nonexistent"))
+                .thenThrow(new OrderNotFoundException("nonexistent"));
 
         mockMvc.perform(get("/orders/nonexistent"))
-                .andExpect(status().isNotFound());
-    }
-
-    @Test
-    void amountCents_calculatedCorrectly() throws Exception {
-        String body = """
-                {"user_id":"u-1","items":[{"sku":"a","qty":2,"price_cents":49900},{"sku":"b","qty":1,"price_cents":1000}]}
-                """;
-
-        when(orderRepository.insertPending(anyString(), anyList(), eq(100800L))).thenReturn("order-4");
-        when(orderProcessor.processOnce(anyString(), eq(100800L), anyString(), any())).thenReturn("INCOMPLETE");
-
-        mockMvc.perform(post("/orders")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isCreated());
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error").value("not_found"))
+                .andExpect(jsonPath("$.message").value("order not found"));
     }
 }

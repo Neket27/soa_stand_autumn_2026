@@ -1,0 +1,83 @@
+package orders.flow;
+
+import orders.api.dto.Item;
+import orders.api.dto.OrderRequest;
+import orders.inventory.InventoryClient;
+import orders.store.OrderRepository;
+import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+class CreateOrderServiceTest {
+
+    private final OrderRepository orderRepository = mock(OrderRepository.class);
+    private final InventoryClient inventoryClient = mock(InventoryClient.class);
+    private final BackgroundWorker backgroundWorker = mock(BackgroundWorker.class);
+    private final CreateOrderService service =
+            new CreateOrderService(orderRepository, inventoryClient, backgroundWorker, 900);
+
+    @Test
+    void createOrder_reserveSucceeds_returnsPendingAndEnqueues() {
+        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 2, 49900)));
+        when(orderRepository.insertPending(eq("u-1"), anyList(), eq(99800L))).thenReturn("order-1");
+        when(inventoryClient.reserve(eq("order-1"), anyList(), eq(Duration.ofMillis(890)))).thenReturn(true);
+
+        CreateOrderService.CreateResult result = service.createOrder(request);
+
+        assertEquals("order-1", result.orderId());
+        assertEquals(OrderStatus.PENDING, result.status());
+        verify(backgroundWorker).enqueue("order-1");
+        verify(orderRepository, never()).transition(anyString(), any(OrderStatus.class));
+    }
+
+    @Test
+    void createOrder_reserveFails_returnsRejectedAndTransitionsWithoutEnqueue() {
+        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 1, 1000)));
+        when(orderRepository.insertPending(eq("u-1"), anyList(), eq(1000L))).thenReturn("order-2");
+        when(inventoryClient.reserve(eq("order-2"), anyList(), any(Duration.class))).thenReturn(false);
+
+        CreateOrderService.CreateResult result = service.createOrder(request);
+
+        assertEquals("order-2", result.orderId());
+        assertEquals(OrderStatus.REJECTED, result.status());
+        verify(orderRepository).transition("order-2", OrderStatus.REJECTED);
+        verify(backgroundWorker, never()).enqueue(anyString());
+    }
+
+    @Test
+    void amountCents_sumsQtyTimesPrice() {
+        OrderRequest request = new OrderRequest("u-1", List.of(
+                new Item("a", 2, 49900), new Item("b", 1, 1000)));
+
+        assertEquals(100800, request.amountCents());
+    }
+
+    @Test
+    void reserveTimeout_isBudgetMinus10() {
+        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 1, 1000)));
+        when(orderRepository.insertPending(anyString(), anyList(), anyLong())).thenReturn("order-3");
+        when(inventoryClient.reserve(eq("order-3"), anyList(), eq(Duration.ofMillis(890)))).thenReturn(true);
+
+        service.createOrder(request);
+
+        verify(inventoryClient).reserve(eq("order-3"), anyList(), eq(Duration.ofMillis(890)));
+    }
+
+    @Test
+    void reserveTimeout_shortBudget_usesMinTimeout() {
+        CreateOrderService shortService =
+                new CreateOrderService(orderRepository, inventoryClient, backgroundWorker, 50);
+        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 1, 1000)));
+        when(orderRepository.insertPending(anyString(), anyList(), anyLong())).thenReturn("order-4");
+        when(inventoryClient.reserve(eq("order-4"), anyList(), eq(Duration.ofMillis(100)))).thenReturn(true);
+
+        shortService.createOrder(request);
+
+        verify(inventoryClient).reserve(eq("order-4"), anyList(), eq(Duration.ofMillis(100)));
+    }
+}
