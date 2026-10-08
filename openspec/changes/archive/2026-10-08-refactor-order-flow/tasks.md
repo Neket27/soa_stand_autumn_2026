@@ -6,12 +6,12 @@
 Сборка/тесты: `cd orders && JAVA_HOME=~/.jdks/temurin-21.0.12.1 mvn -q test`.
 Каждая задача оставляет компилируемое состояние с зелёными тестами.
 
-- [ ] Task 1: enum OrderStatus + transition по enum
-- [ ] Task 2: OrderFulfiller (вынос charge-машины из OrderProcessor)
-- [ ] Task 3: CreateOrderService + типизированный InventoryClient + тонкий контроллер
-- [ ] Task 4: Имена DTO + stale-стаб
-- [ ] Task 5: GlobalExceptionHandler + healthz с проверкой БД
-- [ ] Task 6: Интеграционная проверка (mvn test + make scenarios TASK=1)
+- [x] Task 1: enum OrderStatus + transition по enum
+- [x] Task 2: OrderFulfiller (вынос charge-машины из OrderProcessor)
+- [x] Task 3: CreateOrderService + типизированный InventoryClient + тонкий контроллер
+- [x] Task 4: Имена DTO + stale-стаб
+- [x] Task 5: GlobalExceptionHandler + healthz с проверкой БД
+- [x] Task 6: Интеграционная проверка (mvn test + make scenarios TASK=1)
 
 ---
 
