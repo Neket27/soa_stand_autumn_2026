@@ -3,6 +3,7 @@ package orders.store;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import orders.api.dto.Item;
+import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
@@ -14,12 +15,13 @@ import java.util.UUID;
 @Repository
 public class OrderRepository {
 
-    private static final ObjectMapper objectMapper = new ObjectMapper();
+    private final ObjectMapper objectMapper;
     private final JdbcTemplate jdbcTemplate;
     private final boolean usingPostgres;
 
-    public OrderRepository(JdbcTemplate jdbcTemplate) {
+    public OrderRepository(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
         this.jdbcTemplate = jdbcTemplate;
+        this.objectMapper = objectMapper;
         this.usingPostgres = detectPostgres(jdbcTemplate.getDataSource());
     }
 
@@ -68,7 +70,7 @@ public class OrderRepository {
                             rs.getLong("amount_cents"),
                             rs.getString("items")
                     ), id);
-        } catch (Exception e) {
+        } catch (EmptyResultDataAccessException e) {
             return null;
         }
     }

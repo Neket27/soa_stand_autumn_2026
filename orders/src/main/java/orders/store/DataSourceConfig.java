@@ -11,7 +11,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
 import java.net.URI;
-import java.util.Properties;
 
 @Configuration
 @ConditionalOnProperty(name = "DATABASE_URL")
@@ -22,7 +21,6 @@ public class DataSourceConfig {
         // DATABASE_URL format: postgres://user:pass@host:port/db?sslmode=disable
         // Parse it as a URI: postgres://user:pass@host:port/db
         URI uri = new URI(databaseUrl);
-        String scheme = uri.getScheme();
         String host = uri.getHost();
         int port = uri.getPort();
         String path = uri.getPath();

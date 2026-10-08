@@ -50,7 +50,7 @@ class InventoryClientTest {
         });
 
         mockServer.start();
-        client = new InventoryClient("http://localhost:" + port, 5000);
+        client = new InventoryClient("http://localhost:" + port, 5000, new com.fasterxml.jackson.databind.ObjectMapper());
     }
 
     @AfterEach

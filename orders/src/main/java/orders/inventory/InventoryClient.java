@@ -1,27 +1,48 @@
 package orders.inventory;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 
+@Service
 public class InventoryClient {
+
+    private static final Logger log = LoggerFactory.getLogger(InventoryClient.class);
 
     private final HttpClient httpClient;
     private final String baseUrl;
+    private final ObjectMapper objectMapper;
 
-    public InventoryClient(String baseUrl, int timeoutMs) {
+    public InventoryClient(
+            @Value("${INVENTORY_URL}") String baseUrl,
+            @Value("${INVENTORY.TIMEOUT_MS:200}") int timeoutMs,
+            ObjectMapper objectMapper) {
         this.baseUrl = baseUrl;
+        this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(timeoutMs))
                 .build();
     }
 
     public boolean reserve(String orderId, String itemsJson, Duration timeout) {
-        String body = String.format(
-                "{\"order_id\":\"%s\",\"items\":%s}",
-                orderId, itemsJson);
+        String body;
+        try {
+            ObjectNode root = objectMapper.createObjectNode();
+            root.put("order_id", orderId);
+            root.set("items", objectMapper.readTree(itemsJson));
+            body = objectMapper.writeValueAsString(root);
+        } catch (Exception e) {
+            throw new RuntimeException("failed to serialize reserve request", e);
+        }
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/reservations"))
@@ -38,6 +59,7 @@ public class InventoryClient {
             Thread.currentThread().interrupt();
             return false;
         } catch (java.io.IOException e) {
+            log.warn("reserve error: order={}", orderId);
             return false;
         }
     }

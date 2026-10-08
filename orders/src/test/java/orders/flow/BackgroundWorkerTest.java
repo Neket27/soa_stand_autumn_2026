@@ -18,7 +18,7 @@ import static org.mockito.Mockito.*;
 class BackgroundWorkerTest {
 
     private final OrderRepository orderRepository = mock(OrderRepository.class);
-    private final PaymentCircuitBreaker circuitBreaker = new PaymentCircuitBreaker(5000);
+    private final PaymentCircuitBreaker circuitBreaker = new PaymentCircuitBreaker(5000, 10000);
 
     @Test
     void duplicateQueueEntry_processedOnce() throws Exception {
@@ -33,7 +33,7 @@ class BackgroundWorkerTest {
             return true;
         }).when(processor).processUntilTerminal(eq("order-1"), anyString(), any(Duration.class));
 
-        BackgroundWorker worker = new BackgroundWorker(orderRepository, processor, circuitBreaker, 2);
+        BackgroundWorker worker = new BackgroundWorker(orderRepository, processor, circuitBreaker, 2, 5000);
         worker.enqueue("order-1");
         worker.enqueue("order-1");
 
@@ -50,7 +50,7 @@ class BackgroundWorkerTest {
     @Test
     void reaper_skipsInFlightOrder() {
         OrderProcessor processor = mock(OrderProcessor.class);
-        BackgroundWorker worker = new BackgroundWorker(orderRepository, processor, circuitBreaker, 0);
+        BackgroundWorker worker = new BackgroundWorker(orderRepository, processor, circuitBreaker, 0, 5000);
         worker.inFlight.put("order-2", Boolean.TRUE);
         when(orderRepository.findPendingIds()).thenReturn(List.of("order-2"));
 
@@ -62,7 +62,7 @@ class BackgroundWorkerTest {
     @Test
     void reaper_enqueuesPendingOrder_withoutMarkingInFlight() {
         OrderProcessor processor = mock(OrderProcessor.class);
-        BackgroundWorker worker = new BackgroundWorker(orderRepository, processor, circuitBreaker, 0);
+        BackgroundWorker worker = new BackgroundWorker(orderRepository, processor, circuitBreaker, 0, 5000);
         when(orderRepository.findPendingIds()).thenReturn(List.of("order-3"));
 
         worker.reaper();

@@ -3,11 +3,15 @@ package orders.flow;
 import orders.store.OrderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import jakarta.annotation.PreDestroy;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -20,31 +24,30 @@ public class BackgroundWorker {
     private final OrderRepository orderRepository;
     private final OrderProcessor orderProcessor;
     private final PaymentCircuitBreaker circuitBreaker;
+    private final long deadlineMs;
     final BlockingQueue<String> queue = new LinkedBlockingQueue<>();
     final Map<String, Boolean> inFlight = new ConcurrentHashMap<>();
-    private static final int NUM_WORKERS = 8;
-    private static final Duration MAX_DEADLINE = Duration.ofSeconds(25);
+    private final int workerCount;
+    private final List<Thread> workers = new CopyOnWriteArrayList<>();
 
     public BackgroundWorker(OrderRepository orderRepository,
                             OrderProcessor orderProcessor,
-                            PaymentCircuitBreaker circuitBreaker) {
-        this(orderRepository, orderProcessor, circuitBreaker, NUM_WORKERS);
-    }
-
-    BackgroundWorker(OrderRepository orderRepository,
-                     OrderProcessor orderProcessor,
-                     PaymentCircuitBreaker circuitBreaker,
-                     int numWorkers) {
+                            PaymentCircuitBreaker circuitBreaker,
+                            @Value("${orders.worker.count:8}") int workerCount,
+                            @Value("${orders.worker.deadline-ms:25000}") long deadlineMs) {
         this.orderRepository = orderRepository;
         this.orderProcessor = orderProcessor;
         this.circuitBreaker = circuitBreaker;
-        startWorkers(numWorkers);
+        this.workerCount = workerCount;
+        this.deadlineMs = deadlineMs;
+        startWorkers(workerCount);
     }
 
     private void startWorkers(int numWorkers) {
         for (int i = 0; i < numWorkers; i++) {
             Thread t = new Thread(this::workerLoop, "bg-worker-" + i);
             t.setDaemon(true);
+            workers.add(t);
             t.start();
         }
     }
@@ -67,7 +70,11 @@ public class BackgroundWorker {
                 log.info("BackgroundWorker processing {}", orderId);
                 OrderRepository.Order order = orderRepository.findById(orderId);
                 String itemsJson = order != null ? order.itemsJson() : "[]";
-                orderProcessor.processUntilTerminal(orderId, itemsJson, MAX_DEADLINE);
+                Duration deadline = Duration.ofMillis(deadlineMs);
+                boolean done = orderProcessor.processUntilTerminal(orderId, itemsJson, deadline);
+                if (!done) {
+                    log.warn("BackgroundWorker deadline exceeded for order {}", orderId);
+                }
             } catch (Exception e) {
                 log.warn("BackgroundWorker error on {}", orderId, e);
             } finally {
@@ -95,5 +102,11 @@ public class BackgroundWorker {
                 queue.offer(orderId);
             }
         }
+    }
+
+    @PreDestroy
+    void shutdown() {
+        workers.forEach(Thread::interrupt);
+        log.info("BackgroundWorker shutdown, interrupted {} workers", workers.size());
     }
 }

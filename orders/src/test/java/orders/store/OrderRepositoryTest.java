@@ -1,5 +1,6 @@
 package orders.store;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,7 +38,7 @@ class OrderRepositoryTest {
 
         jdbcTemplate.execute("DELETE FROM orders");
 
-        repository = new OrderRepository(jdbcTemplate);
+        repository = new OrderRepository(jdbcTemplate, new ObjectMapper());
     }
 
     @Test

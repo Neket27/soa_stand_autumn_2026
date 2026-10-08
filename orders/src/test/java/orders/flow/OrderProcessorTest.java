@@ -4,6 +4,7 @@ import orders.inventory.InventoryClient;
 import orders.payment.PaymentClient;
 import orders.store.OrderRepository;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 
 import java.time.Duration;
 
@@ -16,9 +17,9 @@ class OrderProcessorTest {
     private final InventoryClient inventoryClient = mock(InventoryClient.class);
     private final PaymentClient paymentClient = mock(PaymentClient.class);
     private final OrderRepository orderRepository = mock(OrderRepository.class);
-    private final PaymentCircuitBreaker circuitBreaker = new PaymentCircuitBreaker(5000);
+    private final PaymentCircuitBreaker circuitBreaker = new PaymentCircuitBreaker(5000, 10000);
     private final OrderProcessor processor = new OrderProcessor(
-            inventoryClient, paymentClient, orderRepository, circuitBreaker);
+            inventoryClient, paymentClient, orderRepository, circuitBreaker, 1000, 2000);
 
     // --- processOnce tests ---
 
@@ -30,7 +31,7 @@ class OrderProcessorTest {
         assertEquals("PENDING", result);
         // processOnce does not call payment — that's in the background worker
         verify(paymentClient, never()).charge(anyString(), anyLong(), any(Duration.class));
-        verify(paymentClient, never()).hasCharges(anyString(), any(Duration.class));
+        verify(paymentClient, never()).reconcile(anyString(), any(Duration.class));
     }
 
     @Test
@@ -88,7 +89,7 @@ class OrderProcessorTest {
 
         assertTrue(processor.processUntilTerminal("order-1", "[]", Duration.ofSeconds(5)));
         // POST-first: no reconciliation GET before/without a NETWORK outcome
-        verify(paymentClient, never()).hasCharges(eq("order-1"), any(Duration.class));
+        verify(paymentClient, never()).reconcile(eq("order-1"), any(Duration.class));
         verify(paymentClient).charge(eq("order-1"), eq(1000L), any(Duration.class));
         verify(orderRepository).transition("order-1", "paid");
     }
@@ -137,38 +138,85 @@ class OrderProcessorTest {
     }
 
     @Test
-    void processUntilTerminal_networkWithHasCharges_returnsTrue() {
+    void processUntilTerminal_networkReconciledCharged_returnsTrue() {
         OrderRepository.Order order = new OrderRepository.Order("order-4", "user", "pending", 1000, "[]");
         when(orderRepository.findById("order-4")).thenReturn(order);
         when(paymentClient.charge(anyString(), anyLong(), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.NETWORK);
-        when(paymentClient.hasCharges(eq("order-4"), any(Duration.class)))
-                .thenReturn(true);
+        when(paymentClient.reconcile(eq("order-4"), any(Duration.class)))
+                .thenReturn(PaymentClient.ReconciliationResult.CHARGED);
         when(orderRepository.transition("order-4", "paid")).thenReturn(1);
 
         assertTrue(processor.processUntilTerminal("order-4", "[]", Duration.ofSeconds(5)));
         verify(paymentClient).charge(eq("order-4"), eq(1000L), any(Duration.class));
         // reconciliation GET happens exactly once — after the NETWORK outcome
-        verify(paymentClient, times(1)).hasCharges(eq("order-4"), any(Duration.class));
+        verify(paymentClient, times(1)).reconcile(eq("order-4"), any(Duration.class));
         verify(orderRepository).transition("order-4", "paid");
+        // the successful lookup proves Payment is reachable: breaker closes from OPEN
+        assertEquals(PaymentCircuitBreaker.State.CLOSED, circuitBreaker.getState());
     }
 
     @Test
-    void processUntilTerminal_networkNoHasCharges_opensBreaker() {
+    void processUntilTerminal_networkNotCharged_rejectsAndOpensBreaker() {
         OrderRepository.Order order = new OrderRepository.Order("order-5", "user", "pending", 1000, "[]");
         when(orderRepository.findById("order-5")).thenReturn(order);
         when(paymentClient.charge(anyString(), anyLong(), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.NETWORK);
-        when(paymentClient.hasCharges(eq("order-5"), any(Duration.class))).thenReturn(false);
+        when(paymentClient.reconcile(eq("order-5"), any(Duration.class)))
+                .thenReturn(PaymentClient.ReconciliationResult.NOT_CHARGED);
         when(inventoryClient.release(anyString(), any(Duration.class))).thenReturn(true);
         when(orderRepository.transition("order-5", "rejected")).thenReturn(1);
 
         assertTrue(processor.processUntilTerminal("order-5", "[]", Duration.ofSeconds(5)));
         verify(paymentClient).charge(eq("order-5"), eq(1000L), any(Duration.class));
         // single reconciliation GET after the NETWORK outcome
-        verify(paymentClient, times(1)).hasCharges(eq("order-5"), any(Duration.class));
+        verify(paymentClient, times(1)).reconcile(eq("order-5"), any(Duration.class));
+        verify(inventoryClient).release(eq("order-5"), any(Duration.class));
+        verify(orderRepository).transition("order-5", "rejected");
         // breaker should be OPEN after NETWORK with no charge found
         assertEquals(PaymentCircuitBreaker.State.OPEN, circuitBreaker.getState());
+    }
+
+    @Test
+    void processUntilTerminal_networkUnknown_staysPending() {
+        // A failed lookup is "unable to verify", not "no charge": the order must
+        // not be rejected (the money may have been charged), it stays pending.
+        OrderRepository.Order order = new OrderRepository.Order("order-15", "user", "pending", 1000, "[]");
+        when(orderRepository.findById("order-15")).thenReturn(order);
+        when(paymentClient.charge(eq("order-15"), eq(1000L), any(Duration.class)))
+                .thenReturn(PaymentClient.ChargeResult.NETWORK);
+        when(paymentClient.reconcile(eq("order-15"), any(Duration.class)))
+                .thenReturn(PaymentClient.ReconciliationResult.UNKNOWN);
+
+        assertFalse(processor.processUntilTerminal("order-15", "[]", Duration.ofMillis(300)));
+        verify(orderRepository, never()).transition(eq("order-15"), anyString());
+        verify(inventoryClient, never()).release(anyString(), any(Duration.class));
+        verify(paymentClient, times(1)).charge(eq("order-15"), eq(1000L), any(Duration.class));
+        verify(paymentClient, times(1)).reconcile(eq("order-15"), any(Duration.class));
+        assertEquals(PaymentCircuitBreaker.State.OPEN, circuitBreaker.getState());
+    }
+
+    @Test
+    void breakerOpenedBeforeReconcile() {
+        // The spec requires the breaker to be OPEN within the charge timeout,
+        // i.e. before the reconciliation GET is sent.
+        PaymentCircuitBreaker breaker = mock(PaymentCircuitBreaker.class);
+        when(breaker.allow()).thenReturn(true);
+        OrderProcessor p = new OrderProcessor(inventoryClient, paymentClient, orderRepository, breaker, 1000, 2000);
+        OrderRepository.Order order = new OrderRepository.Order("order-16", "user", "pending", 1000, "[]");
+        when(orderRepository.findById("order-16")).thenReturn(order);
+        when(paymentClient.charge(eq("order-16"), eq(1000L), any(Duration.class)))
+                .thenReturn(PaymentClient.ChargeResult.NETWORK);
+        when(paymentClient.reconcile(eq("order-16"), any(Duration.class)))
+                .thenReturn(PaymentClient.ReconciliationResult.NOT_CHARGED);
+        when(inventoryClient.release(anyString(), any(Duration.class))).thenReturn(true);
+        when(orderRepository.transition("order-16", "rejected")).thenReturn(1);
+
+        assertTrue(p.processUntilTerminal("order-16", "[]", Duration.ofSeconds(5)));
+
+        InOrder inOrder = inOrder(breaker, paymentClient);
+        inOrder.verify(breaker).onUnavailable();
+        inOrder.verify(paymentClient).reconcile(eq("order-16"), any(Duration.class));
     }
 
     @Test
@@ -184,7 +232,7 @@ class OrderProcessorTest {
 
         assertTrue(processor.processUntilTerminal("order-9", "[]", Duration.ofSeconds(5)));
         verify(paymentClient, times(1)).charge(eq("order-9"), eq(1000L), any(Duration.class));
-        verify(paymentClient, never()).hasCharges(eq("order-9"), any(Duration.class));
+        verify(paymentClient, never()).reconcile(eq("order-9"), any(Duration.class));
         verify(orderRepository).transition("order-9", "paid");
     }
 
@@ -194,7 +242,6 @@ class OrderProcessorTest {
         when(orderRepository.findById("order-10")).thenReturn(order);
         when(paymentClient.charge(anyString(), anyLong(), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.NETWORK);
-        when(paymentClient.hasCharges(eq("order-10"), any(Duration.class))).thenReturn(false);
 
         // 0ms deadline means immediate timeout
         assertFalse(processor.processUntilTerminal("order-10", "[]", Duration.ZERO));
@@ -216,9 +263,64 @@ class OrderProcessorTest {
     }
 
     @Test
+    void processUntilTerminal_declined_closesBreaker() {
+        // 402 on a probe must close the breaker, not wedge it in HALF_OPEN/OPEN.
+        PaymentCircuitBreaker breaker = new PaymentCircuitBreaker(50, 10000);
+        breaker.onUnavailable();
+        OrderProcessor p = new OrderProcessor(inventoryClient, paymentClient, orderRepository, breaker, 1000, 2000);
+        OrderRepository.Order order = new OrderRepository.Order("order-17", "user", "pending", 1000, "[]");
+        when(orderRepository.findById("order-17")).thenReturn(order);
+        when(paymentClient.charge(eq("order-17"), eq(1000L), any(Duration.class)))
+                .thenReturn(PaymentClient.ChargeResult.DECLINED);
+        when(inventoryClient.release(anyString(), any(Duration.class))).thenReturn(true);
+        when(orderRepository.transition("order-17", "rejected")).thenReturn(1);
+
+        assertTrue(p.processUntilTerminal("order-17", "[]", Duration.ofSeconds(10)));
+        verify(inventoryClient).release(eq("order-17"), any(Duration.class));
+        verify(orderRepository).transition("order-17", "rejected");
+        assertEquals(PaymentCircuitBreaker.State.CLOSED, breaker.getState());
+    }
+
+    @Test
+    void processUntilTerminal_serverErrorTwice_closesBreaker() {
+        PaymentCircuitBreaker breaker = new PaymentCircuitBreaker(50, 10000);
+        breaker.onUnavailable();
+        OrderProcessor p = new OrderProcessor(inventoryClient, paymentClient, orderRepository, breaker, 1000, 2000);
+        OrderRepository.Order order = new OrderRepository.Order("order-18", "user", "pending", 1000, "[]");
+        when(orderRepository.findById("order-18")).thenReturn(order);
+        when(paymentClient.charge(eq("order-18"), eq(1000L), any(Duration.class)))
+                .thenReturn(PaymentClient.ChargeResult.SERVER_ERROR)
+                .thenReturn(PaymentClient.ChargeResult.SERVER_ERROR)
+                .thenReturn(PaymentClient.ChargeResult.CHARGED);
+        when(orderRepository.transition("order-18", "paid")).thenReturn(1);
+
+        assertTrue(p.processUntilTerminal("order-18", "[]", Duration.ofSeconds(10)));
+        // 500 is an answer: reachable. The loop continues and the order is paid.
+        assertEquals(PaymentCircuitBreaker.State.CLOSED, breaker.getState());
+        verify(paymentClient, times(3)).charge(eq("order-18"), eq(1000L), any(Duration.class));
+        verify(orderRepository).transition("order-18", "paid");
+    }
+
+    @Test
+    void processUntilTerminal_serverErrorThenNetwork_reconciles() {
+        OrderRepository.Order order = new OrderRepository.Order("order-19", "user", "pending", 1000, "[]");
+        when(orderRepository.findById("order-19")).thenReturn(order);
+        when(paymentClient.charge(eq("order-19"), eq(1000L), any(Duration.class)))
+                .thenReturn(PaymentClient.ChargeResult.SERVER_ERROR)
+                .thenReturn(PaymentClient.ChargeResult.NETWORK);
+        when(paymentClient.reconcile(eq("order-19"), any(Duration.class)))
+                .thenReturn(PaymentClient.ReconciliationResult.CHARGED);
+        when(orderRepository.transition("order-19", "paid")).thenReturn(1);
+
+        assertTrue(processor.processUntilTerminal("order-19", "[]", Duration.ofSeconds(5)));
+        verify(paymentClient, times(1)).reconcile(eq("order-19"), any(Duration.class));
+        verify(orderRepository).transition("order-19", "paid");
+    }
+
+    @Test
     void processUntilTerminal_breakerOpen_waitsAndRetries() throws InterruptedException {
         // Set breaker to OPEN
-        circuitBreaker.onTimeoutOrConnError();
+        circuitBreaker.onUnavailable();
         assertEquals(PaymentCircuitBreaker.State.OPEN, circuitBreaker.getState());
 
         OrderRepository.Order order = new OrderRepository.Order("order-12", "user", "pending", 1000, "[]");

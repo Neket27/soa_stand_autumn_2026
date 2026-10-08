@@ -6,12 +6,12 @@ import orders.flow.OrderProcessor;
 import orders.store.OrderRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 
 import java.util.List;
 
@@ -34,14 +34,17 @@ class OrdersControllerTest {
     @Mock
     private BackgroundWorker backgroundWorker;
 
-    @InjectMocks
-    private OrdersController controller;
-
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private OrdersController controller;
 
     @org.junit.jupiter.api.BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
+        controller = new OrdersController(orderRepository, orderProcessor, backgroundWorker, objectMapper, 900);
+        LocalValidatorFactoryBean factory = new LocalValidatorFactoryBean();
+        factory.afterPropertiesSet();
+        mockMvc = MockMvcBuilders.standaloneSetup(controller)
+                .setValidator(factory)
+                .build();
     }
 
     @Test
@@ -81,7 +84,7 @@ class OrdersControllerTest {
                 """;
 
         when(orderRepository.insertPending(anyString(), anyList(), anyLong())).thenReturn("order-1");
-        when(orderProcessor.processOnce(eq("order-1"), eq(99800L), anyString(), any())).thenReturn("PENDING");
+        when(orderProcessor.processOnce(anyString(), eq(99800L), anyString(), any())).thenReturn("PENDING");
 
         mockMvc.perform(post("/orders")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -100,8 +103,8 @@ class OrdersControllerTest {
                 """;
 
         when(orderRepository.insertPending(anyString(), anyList(), anyLong())).thenReturn("order-3");
-        when(orderProcessor.processOnce(eq("order-3"), eq(1000L), anyString(), any())).thenReturn("REJECTED");
-        when(orderRepository.transition("order-3", "rejected")).thenReturn(1);
+        when(orderProcessor.processOnce(anyString(), eq(1000L), anyString(), any())).thenReturn("REJECTED");
+        when(orderRepository.transition(anyString(), eq("rejected"))).thenReturn(1);
 
         mockMvc.perform(post("/orders")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -138,7 +141,7 @@ class OrdersControllerTest {
                 """;
 
         when(orderRepository.insertPending(anyString(), anyList(), eq(100800L))).thenReturn("order-4");
-        when(orderProcessor.processOnce(eq("order-4"), eq(100800L), anyString(), any())).thenReturn("INCOMPLETE");
+        when(orderProcessor.processOnce(anyString(), eq(100800L), anyString(), any())).thenReturn("INCOMPLETE");
 
         mockMvc.perform(post("/orders")
                         .contentType(MediaType.APPLICATION_JSON)

@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="RemoteRepositoriesConfiguration">
+    <remote-repository>
+      <option name="id" value="ac21-internal" />
+      <option name="name" value="ac21-internal" />
+      <option name="url" value="https://portal.works.prod.sbt/ssd/tools/nexus-ci/repository/sbt_maven" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="ext-cache" />
+      <option name="name" value="ext-cache" />
+      <option name="url" value="https://dzo.sw.sbc.space/nexus-ci/repository/maven-ext-cache" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="internal" />
+      <option name="name" value="internal" />
+      <option name="url" value="https://dzo.sw.sbc.space/nexus-ci/repository/sbt_maven" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="osc-cache" />
+      <option name="name" value="osc-cache" />
+      <option name="url" value="https://dzo.sw.sbc.space/nexus-ci/repository/maven-sberosc-cache" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="central-cache" />
+      <option name="name" value="central-cache" />
+      <option name="url" value="https://dzo.sw.sbc.space/nexus-ci/repository/maven-central-proxy" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="central" />
+      <option name="name" value="Central Repository" />
+      <option name="url" value="https://dzo.sw.sbc.space/nexus-ci/repository/maven-sberosc-cache" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="osc-central" />
+      <option name="name" value="osc-central" />
+      <option name="url" value="https://dzo.sw.sbc.space/osc/repo/maven/central" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="central" />
+      <option name="name" value="Maven Central repository" />
+      <option name="url" value="https://repo1.maven.org/maven2" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="ac21-proxy" />
+      <option name="name" value="ac21-proxy" />
+      <option name="url" value="https://portal.works.prod.sbt/ssd/tools/nexus-ci/repository/sw_sbt_maven" />
+    </remote-repository>
+    <remote-repository>
+      <option name="id" value="jboss.community" />
+      <option name="name" value="JBoss Community repository" />
+      <option name="url" value="https://repository.jboss.org/nexus/content/repositories/public/" />
+    </remote-repository>
+  </component>
+</project>

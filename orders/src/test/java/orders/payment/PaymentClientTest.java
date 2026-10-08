@@ -61,6 +61,9 @@ class PaymentClientTest {
                     exchange.getResponseHeaders().add("Content-Type", "application/json");
                     exchange.sendResponseHeaders(200, response.length());
                     exchange.getResponseBody().write(response.getBytes());
+                } else if (query != null && query.contains("order_id=test-500")) {
+                    exchange.sendResponseHeaders(500, 0);
+                    exchange.getResponseBody().close();
                 } else {
                     exchange.sendResponseHeaders(200, 0);
                     exchange.getResponseBody().close();
@@ -69,7 +72,7 @@ class PaymentClientTest {
         });
 
         mockServer.start();
-        client = new PaymentClient("http://localhost:" + port, 5000, 5000);
+        client = new PaymentClient("http://localhost:" + port, 5000, new com.fasterxml.jackson.databind.ObjectMapper());
     }
 
     @AfterEach
@@ -96,15 +99,28 @@ class PaymentClientTest {
     }
 
     @Test
-    void hasCharges_found() {
-        boolean has = client.hasCharges("test-charged", Duration.ofSeconds(5));
-        assertTrue(has);
+    void reconcile_charged() {
+        assertEquals(PaymentClient.ReconciliationResult.CHARGED,
+                client.reconcile("test-charged", Duration.ofSeconds(5)));
     }
 
     @Test
-    void hasCharges_empty() {
-        boolean has = client.hasCharges("test-empty", Duration.ofSeconds(5));
-        assertFalse(has);
+    void reconcile_notCharged() {
+        assertEquals(PaymentClient.ReconciliationResult.NOT_CHARGED,
+                client.reconcile("test-empty", Duration.ofSeconds(5)));
+    }
+
+    @Test
+    void reconcile_unknown_onServerError() {
+        assertEquals(PaymentClient.ReconciliationResult.UNKNOWN,
+                client.reconcile("test-500", Duration.ofSeconds(5)));
+    }
+
+    @Test
+    void reconcile_unknown_onConnectionError() {
+        PaymentClient downClient = new PaymentClient("http://localhost:1", 200, new com.fasterxml.jackson.databind.ObjectMapper());
+        assertEquals(PaymentClient.ReconciliationResult.UNKNOWN,
+                downClient.reconcile("any-order", Duration.ofSeconds(2)));
     }
 
     @Test

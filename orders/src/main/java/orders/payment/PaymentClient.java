@@ -1,7 +1,12 @@
 package orders.payment;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
 
 import java.net.URI;
 import java.net.URLEncoder;
@@ -11,30 +16,34 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
+@Service
 public class PaymentClient {
 
+    private static final Logger log = LoggerFactory.getLogger(PaymentClient.class);
+
     private final HttpClient httpClient;
-    private final HttpClient lookupClient;
     private final String baseUrl;
     private final ObjectMapper objectMapper;
 
-    public PaymentClient(String baseUrl, int connectTimeoutMs, int readTimeoutMs) {
+    public PaymentClient(
+            @Value("${PAYMENT_URL}") String baseUrl,
+            @Value("${PAYMENT.CONNECT_TIMEOUT_MS:200}") int connectTimeoutMs,
+            ObjectMapper objectMapper) {
         this.baseUrl = baseUrl;
-        this.objectMapper = new ObjectMapper();
+        this.objectMapper = objectMapper;
         this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(connectTimeoutMs))
-                .build();
-        // Separate client for hasCharges with its own connection pool
-        // to avoid reuse of broken connections after charge timeouts.
-        this.lookupClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(connectTimeoutMs))
                 .build();
     }
 
     public ChargeResult charge(String orderId, long amountCents, Duration timeout) {
-        String body = String.format(
-                "{\"order_id\":\"%s\",\"amount_cents\":%d,\"currency\":\"RUB\"}",
-                orderId, amountCents);
+        String body;
+        try {
+            body = objectMapper.writeValueAsString(
+                    new ChargeRequest(orderId, amountCents, "RUB"));
+        } catch (Exception e) {
+            throw new RuntimeException("failed to serialize charge request", e);
+        }
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/payments"))
@@ -55,18 +64,24 @@ public class PaymentClient {
                 return ChargeResult.SERVER_ERROR;
             }
         } catch (InterruptedException e) {
-            // Real interrupt (worker shutdown) — preserve the flag.
             Thread.currentThread().interrupt();
             return ChargeResult.NETWORK;
         } catch (java.io.IOException e) {
-            // Timeout or connection drop. Do NOT set the interrupt flag —
-            // it would break subsequent blocking calls (hasCharges, sleep)
-            // on this worker thread.
+            log.warn("charge error: order={} ({})", orderId, e.getClass().getSimpleName());
             return ChargeResult.NETWORK;
         }
     }
 
-    public boolean hasCharges(String orderId, Duration timeout) {
+    /**
+     * Three states: a failed lookup must NOT be reported as "no charge" —
+     * "verified empty" and "unable to verify" lead to different decisions
+     * (reject vs stay pending).
+     */
+    public enum ReconciliationResult {
+        CHARGED, NOT_CHARGED, UNKNOWN
+    }
+
+    public ReconciliationResult reconcile(String orderId, Duration timeout) {
         String encoded = URLEncoder.encode(orderId, StandardCharsets.UTF_8);
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(baseUrl + "/payments?order_id=" + encoded))
@@ -75,21 +90,33 @@ public class PaymentClient {
                 .build();
 
         try {
-            HttpResponse<String> response = lookupClient.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200) {
-                return false;
+                log.warn("reconcile non-200: order={} status={}", orderId, response.statusCode());
+                return ReconciliationResult.UNKNOWN;
             }
             JsonNode node = objectMapper.readTree(response.body());
-            return node.isArray() && node.size() > 0;
+            if (!node.isArray()) {
+                log.warn("reconcile unexpected body: order={}", orderId);
+                return ReconciliationResult.UNKNOWN;
+            }
+            return node.size() > 0 ? ReconciliationResult.CHARGED : ReconciliationResult.NOT_CHARGED;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return false;
+            log.warn("reconcile interrupted: order={}", orderId);
+            return ReconciliationResult.UNKNOWN;
         } catch (Exception e) {
-            return false;
+            log.warn("reconcile error: order={} ({})", orderId, e.getClass().getSimpleName());
+            return ReconciliationResult.UNKNOWN;
         }
     }
 
     public enum ChargeResult {
         CHARGED, DECLINED, SERVER_ERROR, NETWORK
     }
+
+    record ChargeRequest(
+            @JsonProperty("order_id") String orderId,
+            @JsonProperty("amount_cents") long amountCents,
+            @JsonProperty("currency") String currency) {}
 }

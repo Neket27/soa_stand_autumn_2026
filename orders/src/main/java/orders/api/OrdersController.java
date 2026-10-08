@@ -2,6 +2,7 @@ package orders.api;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.validation.Valid;
 import orders.api.dto.Error;
 import orders.api.dto.Item;
 import orders.api.dto.Order;
@@ -10,6 +11,7 @@ import orders.api.dto.OrderRequest;
 import orders.flow.BackgroundWorker;
 import orders.flow.OrderProcessor;
 import orders.store.OrderRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -19,18 +21,22 @@ import java.util.List;
 @RestController
 public class OrdersController {
 
-    private static final ObjectMapper objectMapper = new ObjectMapper();
-
     private final OrderRepository orderRepository;
     private final OrderProcessor orderProcessor;
     private final BackgroundWorker backgroundWorker;
+    private final ObjectMapper objectMapper;
+    private final long budgetMs;
 
     public OrdersController(OrderRepository orderRepository,
                             OrderProcessor orderProcessor,
-                            BackgroundWorker backgroundWorker) {
+                            BackgroundWorker backgroundWorker,
+                            ObjectMapper objectMapper,
+                            @Value("${orders.process.budget-ms:900}") long budgetMs) {
         this.orderRepository = orderRepository;
         this.orderProcessor = orderProcessor;
         this.backgroundWorker = backgroundWorker;
+        this.objectMapper = objectMapper;
+        this.budgetMs = budgetMs;
     }
 
     @GetMapping("/healthz")
@@ -39,11 +45,7 @@ public class OrdersController {
     }
 
     @PostMapping("/orders")
-    public ResponseEntity<?> createOrder(@RequestBody OrderRequest request) {
-        if (!valid(request)) {
-            return ResponseEntity.badRequest().body(new Error("validation_error", "invalid request body"));
-        }
-
+    public ResponseEntity<?> createOrder(@Valid @RequestBody OrderRequest request) {
         long amountCents = 0;
         for (Item item : request.items()) {
             amountCents += (long) item.qty() * item.priceCents();
@@ -53,7 +55,7 @@ public class OrdersController {
 
         String orderId = orderRepository.insertPending(request.user_id(), request.items(), amountCents);
 
-        Duration budget = Duration.ofMillis(900);
+        Duration budget = Duration.ofMillis(budgetMs);
         String result = orderProcessor.processOnce(orderId, amountCents, itemsJson, budget);
 
         // processOnce returns only REJECTED (reserve not taken) or PENDING
@@ -73,17 +75,6 @@ public class OrdersController {
             return ResponseEntity.notFound().build();
         }
         return ResponseEntity.ok(new Order(order.id(), order.status(), order.amountCents()));
-    }
-
-    private boolean valid(OrderRequest req) {
-        if (req.user_id() == null || req.user_id().isEmpty()) return false;
-        if (req.items() == null || req.items().isEmpty()) return false;
-        for (Item item : req.items()) {
-            if (item.sku() == null || item.sku().isEmpty()) return false;
-            if (item.qty() < 1) return false;
-            if (item.priceCents() < 0) return false;
-        }
-        return true;
     }
 
     private String buildItemsJson(List<Item> items) {
