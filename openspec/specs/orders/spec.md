@@ -298,23 +298,33 @@ use a short connection timeout (5 s) so that `GET /healthz` fails fast
 - When `GET /healthz` is called
 - Then it responds `503` in under the data source connection timeout (5 s)
 
-### Requirement: Money values stay integer cents
+### Requirement: Money values use BigDecimal internally
 
-Order and payment amounts SHALL remain `long` cents end to end (DTOs,
-domain, repository, `amount_cents BIGINT` column and the `int64` contract
-fields), per the engineering standard «все денежные величины — long
-(центы)». `BigDecimal` SHALL NOT be introduced for amount fields.
+Order and payment amounts SHALL be represented as `java.math.BigDecimal`
+(integer cents, scale 0) end to end inside the Orders service: request and
+response DTOs, the domain model (`StoredOrder`), the repository and the
+payment client. `BigDecimal` SHALL be the sole monetary type — `long`,
+`int`, `double` or `float` SHALL NOT be used for amount fields inside the
+service. The wire representation SHALL remain integer cents per
+`contracts/orders.yaml` and `contracts/payment.yaml` (`price_cents`,
+`amount_cents`, int64): a scale-0 `BigDecimal` serializes to a JSON
+integer, so the external contract is unchanged.
 
-#### Scenario: amount flows as integer cents
+#### Scenario: amount flows as integer cents on the wire
 
-- Given a request with items `{qty: 2, price_cents: 49900}`
+- Given a request with items `{sku: "sku-1", qty: 2, price_cents: 49900}`
 - When the order is created and later charged
-- Then `amount_cents` is `99800` in `GET /orders/{id}` and in the
-  `POST /payments` body, as an integer
+- Then `GET /orders/{id}` returns `amount_cents: 99800` as a JSON integer
+- And the `POST /payments` body carries `"amount_cents": 99800` as a JSON
+  integer
 
-### Requirement: State machine logging
+#### Scenario: amount arithmetic is exact
 
-`OrderFulfiller.fulfill()` SHALL log at INFO level the outcome of each payment
+- Given an order with items `{qty: 3, price_cents: 33}`
+- When the order amount is computed
+- Then `amount_cents` is exactly `99` (no floating-point rounding)
+
+`OrderCharger.charge()` SHALL log at INFO level the outcome of each payment
 charge attempt (including the retry after `SERVER_ERROR`), the reconciliation
 result after a `NETWORK` outcome, and each order status transition. A failed
 `release()` call SHALL be logged at WARN level with the `order_id`.
@@ -341,7 +351,7 @@ result after a `NETWORK` outcome, and each order status transition. A failed
 
 #### Scenario: Worker deadline exceeded is logged
 
-- Given a worker's `fulfill()` returns `false` (deadline exhausted)
+- Given a worker's `charge()` returns `false` (time budget exhausted)
 - When the worker loop finishes the iteration
 - Then a WARN log line containing the `order_id` is emitted
 
@@ -391,8 +401,8 @@ via environment), not hardcoded:
 | Property | Default | Used by |
 |---|---|---|
 | `orders.process.budget-ms` | `900` | `CreateOrderService` (reserve timeout) |
-| `orders.process.charge-timeout-ms` | `1000` | `OrderFulfiller` (charge, retry, reconciliation) |
-| `orders.process.breaker-wait-ms` | `2000` | `OrderFulfiller` sleep while breaker is open |
+| `orders.process.charge-timeout-ms` | `1000` | `OrderCharger` (charge, retry, reconciliation) |
+| `orders.process.breaker-wait-ms` | `2000` | `OrderCharger` sleep while breaker is open |
 | `orders.worker.deadline-ms` | `25000` | `BackgroundWorker` max deadline |
 | `orders.worker.count` | `8` | `BackgroundWorker` worker threads |
 
@@ -449,7 +459,7 @@ Classes whose dependencies are only final fields without `@Value`
 (`OrdersController`, `OrderQueryService`) SHALL use Lombok
 `@RequiredArgsConstructor` instead of manually written constructors. Lombok
 is a `provided` dependency in `pom.xml`. Classes with `@Value` parameters
-(`CreateOrderService`, `OrderFulfiller`, `PaymentCircuitBreaker`,
+(`CreateOrderService`, `OrderCharger`, `PaymentCircuitBreaker`,
 `PaymentClient`, `InventoryClient`, `BackgroundWorker`) and
 `OrderRepository` (computes `usingPostgres` in its constructor via
 `detectPostgres()`) SHALL keep manual constructors — Spring does not see
@@ -514,10 +524,10 @@ parameter to trigger Bean Validation before the handler method executes.
 ### Requirement: Validation exception handling
 
 `GlobalExceptionHandler` (`@RestControllerAdvice`) SHALL handle
-`MethodArgumentNotValidException` and return `400 Bad Request` with the
-contract `Error` body.
+`MethodArgumentNotValidException` and return `400 Bad Request` with the contract error body produced by the `ApiError`
+record (JSON shape unchanged: `{"error": ..., "message": ...}`).
 
-#### Scenario: Validation exception returns 400 with the Error body
+#### Scenario: Validation exception returns 400 with the ApiError body
 
 - Given a request body fails validation
 - When `MethodArgumentNotValidException` is thrown
@@ -538,9 +548,9 @@ application context SHALL discover them via component scanning.
 - Then `PaymentClient` is available as a singleton bean in the context
 - And it was discovered via `@Service` annotation, not via a `@Bean` method
 
-#### Scenario: OrderFulfiller receives dependencies via constructor injection
+#### Scenario: OrderCharger receives dependencies via constructor injection
 
-- Given `OrderFulfiller` is annotated with `@Service`
+- Given `OrderCharger` is annotated with `@Service`
 - When the Spring context creates the bean
 - Then its dependencies (`InventoryClient`, `PaymentClient`,
   `OrderRepository`, `PaymentCircuitBreaker`) and `@Value` parameters are
@@ -581,7 +591,7 @@ SHALL be injected directly into components via `@Value`. The only allowed
 - When inspecting all `@Configuration` classes in `orders/`
 - Then there is no `@Bean` method for any business component
   (`PaymentClient`, `InventoryClient`, `CreateOrderService`,
-  `OrderFulfiller`, `PaymentCircuitBreaker`, `BackgroundWorker`)
+  `OrderCharger`, `PaymentCircuitBreaker`, `BackgroundWorker`)
 - And `@EnableScheduling` is present on the main application class
 
 ### Requirement: Main API responses are contract DTOs
@@ -595,7 +605,7 @@ the lookup, maps the stored row to the `Order` DTO, and throws
 `OrderNotFoundException` when the order does not exist. The controller
 method for `GET /orders/{id}` SHALL contain no null check, no repository
 access and no status branching — it returns the use case result. An unknown
-order id SHALL be reported as `404` with an `Error` JSON body
+order id SHALL be reported as `404` with an `ApiError` JSON body
 (`{"error":"not_found","message":"order not found"}`) produced by
 `GlobalExceptionHandler`, per the 404 response declared in
 `contracts/orders.yaml`. `GET /healthz` SHALL remain a `ResponseEntity<Void>`
@@ -623,7 +633,7 @@ refactor.
 - Then the response is `200` with body
   `{"id": ..., "status": ..., "amount_cents": ...}`
 
-#### Scenario: unknown order answered 404 with an Error body
+#### Scenario: unknown order answered 404 with an ApiError body
 
 - Given an `id` that Orders has never accepted
 - When `GET /orders/{id}` is called
@@ -705,7 +715,7 @@ unchanged.
 
 All order status transitions (`pending → paid`, `pending → rejected`) SHALL be made
 only by the flow layer: `CreateOrderService` (rejection on failed reserve) and
-`OrderFulfiller` (charge outcomes). `OrdersController` SHALL NOT call
+`OrderCharger` (charge outcomes). `OrdersController` SHALL NOT call
 `OrderRepository.transition` directly; it SHALL depend on `CreateOrderService` for
 `POST /orders`, and the read path SHALL be owned by the `OrderQueryService` use case.
 The order amount rule `amount_cents = Σ qty × price_cents` SHALL live in one place

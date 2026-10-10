@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
+import java.math.BigDecimal;
 import java.sql.SQLException;
 import java.util.List;
 
@@ -45,32 +46,32 @@ class OrderRepositoryTest {
     @Test
     void insertAndFindById() {
         String id = repository.insertPending("user-1", List.of(
-                new orders.api.dto.Item("sku-1", 2, 49900)), 99800);
+                new orders.api.dto.Item("sku-1", 2, new BigDecimal("49900"))), new BigDecimal("99800"));
 
         assertNotNull(id);
-        OrderRepository.Order order = repository.findById(id);
+        OrderRepository.StoredOrder order = repository.findById(id);
         assertNotNull(order);
         assertEquals("user-1", order.userId());
-        assertEquals(99800, order.amountCents());
+        assertEquals(0, order.amountCents().compareTo(new BigDecimal("99800")));
         assertEquals("pending", order.status());
     }
 
     @Test
     void transition_pendingToPaid() {
         String id = repository.insertPending("user-1", List.of(
-                new orders.api.dto.Item("sku-1", 1, 1000)), 1000);
+                new orders.api.dto.Item("sku-1", 1, new BigDecimal("1000"))), new BigDecimal("1000"));
 
         int updated = repository.transition(id, OrderStatus.PAID);
         assertEquals(1, updated);
 
-        OrderRepository.Order order = repository.findById(id);
+        OrderRepository.StoredOrder order = repository.findById(id);
         assertEquals("paid", order.status());
     }
 
     @Test
     void transition_usesLowercaseValue() {
         String id = repository.insertPending("user-1", List.of(
-                new orders.api.dto.Item("sku-1", 1, 1000)), 1000);
+                new orders.api.dto.Item("sku-1", 1, new BigDecimal("1000"))), new BigDecimal("1000"));
 
         repository.transition(id, OrderStatus.PAID);
 
@@ -82,7 +83,7 @@ class OrderRepositoryTest {
     @Test
     void transition_onlyOnce() {
         String id = repository.insertPending("user-1", List.of(
-                new orders.api.dto.Item("sku-1", 1, 1000)), 1000);
+                new orders.api.dto.Item("sku-1", 1, new BigDecimal("1000"))), new BigDecimal("1000"));
 
         int first = repository.transition(id, OrderStatus.PAID);
         assertEquals(1, first);
@@ -94,9 +95,9 @@ class OrderRepositoryTest {
     @Test
     void findPendingIds() {
         String id1 = repository.insertPending("user-1", List.of(
-                new orders.api.dto.Item("sku-1", 1, 1000)), 1000);
+                new orders.api.dto.Item("sku-1", 1, new BigDecimal("1000"))), new BigDecimal("1000"));
         String id2 = repository.insertPending("user-2", List.of(
-                new orders.api.dto.Item("sku-2", 2, 500)), 1000);
+                new orders.api.dto.Item("sku-2", 2, new BigDecimal("500"))), new BigDecimal("1000"));
 
         List<String> pending = repository.findPendingIds();
         assertEquals(2, pending.size());
@@ -107,7 +108,7 @@ class OrderRepositoryTest {
     @Test
     void findPendingIds_excludesNonPending() {
         String id = repository.insertPending("user-1", List.of(
-                new orders.api.dto.Item("sku-1", 1, 1000)), 1000);
+                new orders.api.dto.Item("sku-1", 1, new BigDecimal("1000"))), new BigDecimal("1000"));
 
         repository.transition(id, OrderStatus.PAID);
 
@@ -117,7 +118,7 @@ class OrderRepositoryTest {
 
     @Test
     void findByIdNotFound() {
-        OrderRepository.Order order = repository.findById("nonexistent-id");
+        OrderRepository.StoredOrder order = repository.findById("nonexistent-id");
         assertNull(order);
     }
 

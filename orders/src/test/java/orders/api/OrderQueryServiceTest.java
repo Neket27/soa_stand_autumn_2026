@@ -7,6 +7,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+import java.math.BigDecimal;
+
 class OrderQueryServiceTest {
 
     private final OrderRepository orderRepository = mock(OrderRepository.class);
@@ -15,13 +17,13 @@ class OrderQueryServiceTest {
     @Test
     void getOrder_found_returnsMappedDto() {
         when(orderRepository.findById("order-1")).thenReturn(
-                new OrderRepository.Order("order-1", "u-1", "paid", 99800, "[]"));
+                new OrderRepository.StoredOrder("order-1", "u-1", "paid", new BigDecimal("99800"), "[]"));
 
         Order order = service.getOrder("order-1");
 
         assertEquals("order-1", order.id());
         assertEquals("paid", order.status());
-        assertEquals(99800, order.amountCents());
+        assertEquals(new BigDecimal("99800"), order.amountCents());
     }
 
     @Test

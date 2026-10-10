@@ -23,18 +23,18 @@ class BackgroundWorkerTest {
     void duplicateQueueEntry_processedOnce() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         CountDownLatch holdOrder = new CountDownLatch(1);
-        OrderFulfiller fulfiller = mock(OrderFulfiller.class);
+        OrderCharger charger = mock(OrderCharger.class);
         doAnswer(inv -> {
             calls.incrementAndGet();
             holdOrder.await(5, TimeUnit.SECONDS);
             return true;
-        }).when(fulfiller).fulfill(eq("order-1"), any(Duration.class));
+        }).when(charger).charge(eq("order-1"), any(Duration.class));
 
-        BackgroundWorker worker = new BackgroundWorker(orderRepository, fulfiller, circuitBreaker, 2, 5000);
+        BackgroundWorker worker = new BackgroundWorker(orderRepository, charger, circuitBreaker, 2, 5000);
         worker.enqueue("order-1");
         worker.enqueue("order-1");
 
-        // One worker is blocked in fulfill, the other must drop
+        // One worker is blocked in charge, the other must drop
         // the duplicate entry instead of processing the order a second time.
         Thread.sleep(300);
         assertEquals(1, calls.get());
@@ -46,8 +46,8 @@ class BackgroundWorkerTest {
 
     @Test
     void reaper_skipsInFlightOrder() {
-        OrderFulfiller fulfiller = mock(OrderFulfiller.class);
-        BackgroundWorker worker = new BackgroundWorker(orderRepository, fulfiller, circuitBreaker, 0, 5000);
+        OrderCharger charger = mock(OrderCharger.class);
+        BackgroundWorker worker = new BackgroundWorker(orderRepository, charger, circuitBreaker, 0, 5000);
         worker.inFlight.put("order-2", Boolean.TRUE);
         when(orderRepository.findPendingIds()).thenReturn(List.of("order-2"));
 
@@ -58,8 +58,8 @@ class BackgroundWorkerTest {
 
     @Test
     void reaper_enqueuesPendingOrder_withoutMarkingInFlight() {
-        OrderFulfiller fulfiller = mock(OrderFulfiller.class);
-        BackgroundWorker worker = new BackgroundWorker(orderRepository, fulfiller, circuitBreaker, 0, 5000);
+        OrderCharger charger = mock(OrderCharger.class);
+        BackgroundWorker worker = new BackgroundWorker(orderRepository, charger, circuitBreaker, 0, 5000);
         when(orderRepository.findPendingIds()).thenReturn(List.of("order-3"));
 
         worker.reaper();

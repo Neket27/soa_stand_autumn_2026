@@ -16,9 +16,9 @@ import java.time.Duration;
  * to {@link PaymentClient}.
  */
 @Service
-public class OrderFulfiller {
+public class OrderCharger {
 
-    private static final Logger log = LoggerFactory.getLogger(OrderFulfiller.class);
+    private static final Logger log = LoggerFactory.getLogger(OrderCharger.class);
 
     private final InventoryClient inventoryClient;
     private final PaymentClient paymentClient;
@@ -27,7 +27,7 @@ public class OrderFulfiller {
     private final Duration chargeTimeout;
     private final long breakerWaitMs;
 
-    public OrderFulfiller(InventoryClient inventoryClient,
+    public OrderCharger(InventoryClient inventoryClient,
                           PaymentClient paymentClient,
                           OrderRepository orderRepository,
                           PaymentCircuitBreaker circuitBreaker,
@@ -41,11 +41,17 @@ public class OrderFulfiller {
         this.breakerWaitMs = breakerWaitMs;
     }
 
-    public boolean fulfill(String orderId, Duration maxDeadline) {
-        long deadline = System.currentTimeMillis() + maxDeadline.toMillis();
+    /**
+     * Drives the order's charge state machine within the given time budget.
+     *
+     * @return true if the order reached a terminal status (paid/rejected),
+     *         false if the time budget was exhausted (the reaper retries it)
+     */
+    public boolean charge(String orderId, Duration timeBudget) {
+        long deadline = System.currentTimeMillis() + timeBudget.toMillis();
 
         while (System.currentTimeMillis() < deadline) {
-            OrderRepository.Order order = orderRepository.findById(orderId);
+            OrderRepository.StoredOrder order = orderRepository.findById(orderId);
             if (order == null) {
                 log.info("order={} not found, stopping", orderId);
                 return false;

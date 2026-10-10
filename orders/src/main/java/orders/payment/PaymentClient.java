@@ -3,11 +3,14 @@ package orders.payment;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
@@ -16,10 +19,9 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
+@Slf4j
 @Service
 public class PaymentClient {
-
-    private static final Logger log = LoggerFactory.getLogger(PaymentClient.class);
 
     private final HttpClient httpClient;
     private final String baseUrl;
@@ -36,7 +38,7 @@ public class PaymentClient {
                 .build();
     }
 
-    public ChargeResult charge(String orderId, long amountCents, Duration timeout) {
+    public ChargeResult charge(String orderId, BigDecimal amountCents, Duration timeout) {
         String body;
         try {
             body = objectMapper.writeValueAsString(
@@ -66,7 +68,7 @@ public class PaymentClient {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return ChargeResult.NETWORK;
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             log.warn("charge error: order={} ({})", orderId, e.getClass().getSimpleName());
             return ChargeResult.NETWORK;
         }
@@ -100,7 +102,7 @@ public class PaymentClient {
                 log.warn("reconcile unexpected body: order={}", orderId);
                 return ReconciliationResult.UNKNOWN;
             }
-            return node.size() > 0 ? ReconciliationResult.CHARGED : ReconciliationResult.NOT_CHARGED;
+            return !node.isEmpty() ? ReconciliationResult.CHARGED : ReconciliationResult.NOT_CHARGED;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.warn("reconcile interrupted: order={}", orderId);
@@ -117,6 +119,6 @@ public class PaymentClient {
 
     record ChargeRequest(
             @JsonProperty("order_id") String orderId,
-            @JsonProperty("amount_cents") long amountCents,
+            @JsonProperty("amount_cents") BigDecimal amountCents,
             @JsonProperty("currency") String currency) {}
 }

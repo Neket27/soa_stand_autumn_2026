@@ -9,6 +9,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
 import javax.sql.DataSource;
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.util.List;
 import java.util.UUID;
@@ -34,7 +35,7 @@ public class OrderRepository {
         }
     }
 
-    public String insertPending(String userId, List<Item> items, long amountCents) {
+    public String insertPending(String userId, List<Item> items, BigDecimal amountCents) {
         String id = UUID.randomUUID().toString();
         String itemsJson;
         try {
@@ -60,15 +61,15 @@ public class OrderRepository {
                 to.value(), id);
     }
 
-    public Order findById(String id) {
+    public StoredOrder findById(String id) {
         try {
             return jdbcTemplate.queryForObject(
                     "SELECT id, user_id, status, amount_cents, items FROM orders WHERE id = ?",
-                    (rs, rowNum) -> new Order(
+                    (rs, rowNum) -> new StoredOrder(
                             rs.getString("id"),
                             rs.getString("user_id"),
                             rs.getString("status"),
-                            rs.getLong("amount_cents"),
+                            rs.getBigDecimal("amount_cents"),
                             rs.getString("items")
                     ), id);
         } catch (EmptyResultDataAccessException e) {
@@ -90,5 +91,5 @@ public class OrderRepository {
         }
     }
 
-    public static record Order(String id, String userId, String status, long amountCents, String itemsJson) {}
+    public static record StoredOrder(String id, String userId, String status, BigDecimal amountCents, String itemsJson) {}
 }

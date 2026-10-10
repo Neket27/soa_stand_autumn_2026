@@ -30,8 +30,7 @@ class InventoryClientTest {
                 String body = new String(exchange.getRequestBody().readAllBytes());
                 boolean ok = body.contains("\"order_id\":\"order-reserved\"")
                         && body.contains("\"sku\":\"sku-1\"")
-                        && body.contains("\"qty\":2")
-                        && body.contains("\"price_cents\":100");
+                        && body.contains("\"qty\":2}");
                 int status = ok ? 201 : 400;
                 String response = "{\"order_id\":\"order-reserved\",\"status\":\"held\",\"items\":[]}";
                 exchange.getResponseHeaders().add("Content-Type", "application/json");
@@ -60,7 +59,7 @@ class InventoryClientTest {
     @Test
     void reserve_success_bodyCarriesOrderIdAndTypedItems() {
         boolean reserved = client.reserve("order-reserved",
-                List.of(new orders.api.dto.Item("sku-1", 2, 100)), Duration.ofSeconds(5));
+                List.of(new orders.api.dto.Item("sku-1", 2, new java.math.BigDecimal("100"))), Duration.ofSeconds(5));
         assertTrue(reserved);
     }
 

@@ -16,7 +16,7 @@ public class OrderQueryService {
     private final OrderRepository orderRepository;
 
     public Order getOrder(String id) {
-        OrderRepository.Order order = orderRepository.findById(id);
+        OrderRepository.StoredOrder order = orderRepository.findById(id);
         if (order == null) {
             throw new OrderNotFoundException(id);
         }

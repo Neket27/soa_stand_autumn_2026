@@ -4,16 +4,18 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 public record OrderRequest(
         @NotBlank @JsonProperty("user_id") String userId,
         @NotEmpty @JsonProperty("items") List<Item> items) {
 
-    /** Order amount rule: sum of qty * price_cents over all items. */
-    public long amountCents() {
+    /** Order amount rule: sum of qty * price_cents over all items, in cents. */
+    public BigDecimal amountCents() {
         return items.stream()
-                .mapToLong(i -> (long) i.qty() * i.priceCents())
-                .sum();
+                .reduce(BigDecimal.ZERO, (sum, i) ->
+                        sum.add(BigDecimal.valueOf(i.qty()).multiply(i.priceCents())),
+                        BigDecimal::add);
     }
 }

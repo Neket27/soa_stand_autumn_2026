@@ -1,6 +1,6 @@
 package orders.api;
 
-import orders.api.dto.Error;
+import orders.api.dto.ApiError;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ResponseEntity;
 
@@ -12,11 +12,11 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void handleNotFound_returns404WithErrorBody() {
-        ResponseEntity<Error> response =
+        ResponseEntity<ApiError> response =
                 handler.handleNotFound(new OrderNotFoundException("order-1"));
 
         assertEquals(404, response.getStatusCode().value());
-        Error body = response.getBody();
+        ApiError body = response.getBody();
         assertNotNull(body);
         assertEquals("not_found", body.error());
         assertEquals("order not found", body.message());

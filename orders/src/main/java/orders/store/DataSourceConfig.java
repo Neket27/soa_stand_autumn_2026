@@ -20,7 +20,7 @@ public class DataSourceConfig {
 
     @Bean
     public DataSource dataSource(@Value("${DATABASE_URL}") String databaseUrl) {
-        ParsedUrl parsed = databaseUrl(databaseUrl);
+        ParsedUrl parsed = parseDatabaseUrl(databaseUrl);
 
         HikariDataSource dataSource = new HikariDataSource();
         dataSource.setJdbcUrl(parsed.jdbcUrl());
@@ -34,7 +34,7 @@ public class DataSourceConfig {
      * postgres://user:pass@host:port/db?query ->
      * jdbc:postgresql://host:port/db?query + user + password.
      */
-    static ParsedUrl databaseUrl(String databaseUrl) {
+    static ParsedUrl parseDatabaseUrl(String databaseUrl) {
         URI uri = URI.create(databaseUrl);
         String jdbcUrl = String.format("jdbc:postgresql://%s:%d%s",
                 uri.getHost(), uri.getPort(), uri.getPath());

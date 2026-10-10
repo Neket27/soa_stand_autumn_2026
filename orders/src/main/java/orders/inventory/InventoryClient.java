@@ -1,13 +1,16 @@
 package orders.inventory;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import lombok.extern.slf4j.Slf4j;
 import orders.api.dto.Item;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -15,10 +18,9 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 
+@Slf4j
 @Service
 public class InventoryClient {
-
-    private static final Logger log = LoggerFactory.getLogger(InventoryClient.class);
 
     private final HttpClient httpClient;
     private final String baseUrl;
@@ -40,7 +42,14 @@ public class InventoryClient {
         try {
             ObjectNode root = objectMapper.createObjectNode();
             root.put("order_id", orderId);
-            root.set("items", objectMapper.valueToTree(items));
+            ArrayNode itemsNode = objectMapper.createArrayNode();
+            for (Item i : items) {
+                ObjectNode itemNode = objectMapper.createObjectNode();
+                itemNode.put("sku", i.sku());
+                itemNode.put("qty", i.qty());
+                itemsNode.add(itemNode);
+            }
+            root.set("items", itemsNode);
             body = objectMapper.writeValueAsString(root);
         } catch (Exception e) {
             throw new RuntimeException("failed to serialize reserve request", e);
@@ -59,8 +68,9 @@ public class InventoryClient {
             return status == 200 || status == 201;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.warn("Request interrupted");
             return false;
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             log.warn("reserve error: order={}", orderId);
             return false;
         }
@@ -79,8 +89,9 @@ public class InventoryClient {
             return status == 204;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.warn("Request interrupted");
             return false;
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             return false;
         }
     }

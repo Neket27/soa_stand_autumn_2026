@@ -6,6 +6,7 @@ import orders.store.OrderRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 
 /**
@@ -32,7 +33,7 @@ public class CreateOrderService {
     }
 
     public CreateResult createOrder(OrderRequest request) {
-        long amountCents = request.amountCents();
+        BigDecimal amountCents = request.amountCents();
         String orderId = orderRepository.insertPending(request.userId(), request.items(), amountCents);
 
         Duration reserveTimeout = Duration.ofMillis(Math.max(100, budgetMs - 10));

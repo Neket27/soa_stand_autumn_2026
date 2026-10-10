@@ -14,6 +14,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 
+import java.math.BigDecimal;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
@@ -122,7 +123,7 @@ class OrdersControllerTest {
     @Test
     void getOrder_found_returns200() throws Exception {
         when(orderQueryService.getOrder("order-1"))
-                .thenReturn(new Order("order-1", "paid", 99800));
+                .thenReturn(new Order("order-1", "paid", new BigDecimal("99800")));
 
         mockMvc.perform(get("/orders/order-1"))
                 .andExpect(status().isOk())

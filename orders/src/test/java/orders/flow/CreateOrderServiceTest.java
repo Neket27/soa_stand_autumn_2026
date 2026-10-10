@@ -6,6 +6,7 @@ import orders.inventory.InventoryClient;
 import orders.store.OrderRepository;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
 
@@ -23,8 +24,8 @@ class CreateOrderServiceTest {
 
     @Test
     void createOrder_reserveSucceeds_returnsPendingAndEnqueues() {
-        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 2, 49900)));
-        when(orderRepository.insertPending(eq("u-1"), anyList(), eq(99800L))).thenReturn("order-1");
+        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 2, new BigDecimal("49900"))));
+        when(orderRepository.insertPending(eq("u-1"), anyList(), eq(new BigDecimal("99800")))).thenReturn("order-1");
         when(inventoryClient.reserve(eq("order-1"), anyList(), eq(Duration.ofMillis(890)))).thenReturn(true);
 
         CreateOrderService.CreateResult result = service.createOrder(request);
@@ -37,8 +38,8 @@ class CreateOrderServiceTest {
 
     @Test
     void createOrder_reserveFails_returnsRejectedAndTransitionsWithoutEnqueue() {
-        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 1, 1000)));
-        when(orderRepository.insertPending(eq("u-1"), anyList(), eq(1000L))).thenReturn("order-2");
+        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 1, new BigDecimal("1000"))));
+        when(orderRepository.insertPending(eq("u-1"), anyList(), eq(new BigDecimal("1000")))).thenReturn("order-2");
         when(inventoryClient.reserve(eq("order-2"), anyList(), any(Duration.class))).thenReturn(false);
 
         CreateOrderService.CreateResult result = service.createOrder(request);
@@ -50,17 +51,17 @@ class CreateOrderServiceTest {
     }
 
     @Test
-    void amountCents_sumsQtyTimesPrice() {
+    void amount_sumsQtyTimesPrice() {
         OrderRequest request = new OrderRequest("u-1", List.of(
-                new Item("a", 2, 49900), new Item("b", 1, 1000)));
+                new Item("a", 2, new BigDecimal("49900")), new Item("b", 1, new BigDecimal("1000"))));
 
-        assertEquals(100800, request.amountCents());
+        assertEquals(new BigDecimal("100800"), request.amountCents());
     }
 
     @Test
     void reserveTimeout_isBudgetMinus10() {
-        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 1, 1000)));
-        when(orderRepository.insertPending(anyString(), anyList(), anyLong())).thenReturn("order-3");
+        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 1, new BigDecimal("1000"))));
+        when(orderRepository.insertPending(anyString(), anyList(), any(BigDecimal.class))).thenReturn("order-3");
         when(inventoryClient.reserve(eq("order-3"), anyList(), eq(Duration.ofMillis(890)))).thenReturn(true);
 
         service.createOrder(request);
@@ -72,8 +73,8 @@ class CreateOrderServiceTest {
     void reserveTimeout_shortBudget_usesMinTimeout() {
         CreateOrderService shortService =
                 new CreateOrderService(orderRepository, inventoryClient, backgroundWorker, 50);
-        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 1, 1000)));
-        when(orderRepository.insertPending(anyString(), anyList(), anyLong())).thenReturn("order-4");
+        OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 1, new BigDecimal("1000"))));
+        when(orderRepository.insertPending(anyString(), anyList(), any(BigDecimal.class))).thenReturn("order-4");
         when(inventoryClient.reserve(eq("order-4"), anyList(), eq(Duration.ofMillis(100)))).thenReturn(true);
 
         shortService.createOrder(request);

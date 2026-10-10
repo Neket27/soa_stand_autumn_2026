@@ -6,6 +6,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 
@@ -82,19 +83,19 @@ class PaymentClientTest {
 
     @Test
     void charge_success() {
-        PaymentClient.ChargeResult result = client.charge("order-1", 41, Duration.ofSeconds(5));
+        PaymentClient.ChargeResult result = client.charge("order-1", new BigDecimal("41"), Duration.ofSeconds(5));
         assertEquals(PaymentClient.ChargeResult.CHARGED, result);
     }
 
     @Test
     void charge_serverError() {
-        PaymentClient.ChargeResult result = client.charge("order-2", 42, Duration.ofSeconds(5));
+        PaymentClient.ChargeResult result = client.charge("order-2", new BigDecimal("42"), Duration.ofSeconds(5));
         assertEquals(PaymentClient.ChargeResult.SERVER_ERROR, result);
     }
 
     @Test
     void charge_declined() {
-        PaymentClient.ChargeResult result = client.charge("order-3", 43, Duration.ofSeconds(5));
+        PaymentClient.ChargeResult result = client.charge("order-3", new BigDecimal("43"), Duration.ofSeconds(5));
         assertEquals(PaymentClient.ChargeResult.DECLINED, result);
     }
 
@@ -125,7 +126,7 @@ class PaymentClientTest {
 
     @Test
     void charge_sendsIdempotencyKey() {
-        PaymentClient.ChargeResult result = client.charge("test-order-id", 41, Duration.ofSeconds(5));
+        PaymentClient.ChargeResult result = client.charge("test-order-id", new BigDecimal("41"), Duration.ofSeconds(5));
         assertEquals(PaymentClient.ChargeResult.CHARGED, result);
     }
 }
