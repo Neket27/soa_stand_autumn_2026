@@ -18,7 +18,7 @@ class CreateOrderServiceTest {
 
     private final OrderRepository orderRepository = mock(OrderRepository.class);
     private final InventoryClient inventoryClient = mock(InventoryClient.class);
-    private final BackgroundWorker backgroundWorker = mock(BackgroundWorker.class);
+    private final InMemoryChargeDispatcher backgroundWorker = mock(InMemoryChargeDispatcher.class);
     private final CreateOrderService service =
             new CreateOrderService(orderRepository, inventoryClient, backgroundWorker, 900);
 
@@ -37,7 +37,10 @@ class CreateOrderServiceTest {
     }
 
     @Test
-    void createOrder_reserveFails_returnsRejectedAndTransitionsWithoutEnqueue() {
+    void createOrder_reserveFails_returnsRejectedWithDutyAndWithoutEnqueue() {
+        // L2: reserve()==false is an indeterminate outcome (timeout != "no
+        // reservation"), so the rejected transition records the durable release
+        // duty for the reaper sweep. No extra Inventory call on the HTTP path.
         OrderRequest request = new OrderRequest("u-1", List.of(new Item("sku-1", 1, new BigDecimal("1000"))));
         when(orderRepository.insertPending(eq("u-1"), anyList(), eq(new BigDecimal("1000")))).thenReturn("order-2");
         when(inventoryClient.reserve(eq("order-2"), anyList(), any(Duration.class))).thenReturn(false);
@@ -46,7 +49,8 @@ class CreateOrderServiceTest {
 
         assertEquals("order-2", result.orderId());
         assertEquals(OrderStatus.REJECTED, result.status());
-        verify(orderRepository).transition("order-2", OrderStatus.REJECTED);
+        verify(orderRepository).transition("order-2", OrderStatus.REJECTED, true);
+        verify(inventoryClient, never()).release(anyString(), any(Duration.class));
         verify(backgroundWorker, never()).enqueue(anyString());
     }
 

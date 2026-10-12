@@ -1,0 +1,73 @@
+' Orders — компонентная схема (паттерны подписаны notes'ами).
+' Для IDEA: один файл = одна диаграмма. Компонентная диаграмма требует Graphviz
+' (локально: /usr/bin/dot; при ошибке — Settings | PlantUML | Graphviz Dot Path).
+
+@startuml OrdersComponents
+left to right direction
+skinparam componentStyle rectangle
+skinparam linewidth 1
+
+actor "Раннер\n(чёрный ящик)" as Runner
+
+rectangle "Orders (ваш сервис, Java/Spring Boot)" {
+  component "HTTP API\nPOST /orders, GET /orders/{id}, /healthz" as API
+  component "CreateOrderService\n(синхронная часть, бюджет 900 мс)" as COS
+  component "InMemoryChargeDispatcher\nпул 8 воркеров + reaper 500 мс" as BW
+  component "OrderCharger\nмашина состояний charge" as OC
+  component "PaymentCircuitBreaker\nCLOSED/OPEN/HALF_OPEN\n(15 с / 10 с)" as CB
+  component "PaymentClient" as PC
+  component "InventoryClient" as IC
+  database "Postgres\norders\n(status CAS, release_pending)" as DB
+}
+
+component "Payment (mock)" as PAY
+component "Inventory (mock)" as INV
+
+Runner --> API
+API --> COS
+COS --> DB
+COS --> IC
+COS --> BW
+BW --> OC
+OC --> CB
+OC --> PC
+OC --> IC
+OC --> DB
+PC --> PAY
+IC --> INV
+
+note bottom of PC
+  <b>Idempotent Command</b>
+  POST /payments всегда с
+  Idempotency-Key: order_id
+  -- повтор != двойное списание
+end note
+
+note bottom of PAY
+  <b>Reconciliation</b>
+  GET /payments?order_id=
+  только после NETWORK:
+  «нет ответа» != «не списали»
+end note
+
+note bottom of CB
+  <b>Circuit Breaker</b>
+  блэк-хол: <= 1 проб на 15 с,
+  не перегружать Payment (S4)
+end note
+
+note bottom of DB
+  <b>CAS state machine</b>
+  UPDATE ... WHERE status='pending'
+  -- ровно один терминальный переход
+  <b>Durable Compensating Action</b>
+  release_pending: обязанность
+  снять резерв переживает рестарт
+end note
+
+note bottom of BW
+  <b>At-least-once + Reaper</b>
+  БД = очередь: pending и
+  rejected с duty ничего не теряют
+end note
+@enduml

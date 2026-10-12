@@ -29,12 +29,13 @@ class OrderRepositoryTest {
 
         jdbcTemplate.execute("""
             CREATE TABLE IF NOT EXISTS orders (
-                id           VARCHAR PRIMARY KEY,
-                user_id      VARCHAR NOT NULL,
-                status       VARCHAR NOT NULL,
-                amount_cents BIGINT NOT NULL,
-                items        VARCHAR,
-                created_at   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                id              VARCHAR PRIMARY KEY,
+                user_id         VARCHAR NOT NULL,
+                status          VARCHAR NOT NULL,
+                amount_cents    BIGINT NOT NULL,
+                items           VARCHAR,
+                created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                release_pending BOOLEAN NOT NULL DEFAULT FALSE
             )
             """);
 
@@ -53,7 +54,7 @@ class OrderRepositoryTest {
         assertNotNull(order);
         assertEquals("user-1", order.userId());
         assertEquals(0, order.amountCents().compareTo(new BigDecimal("99800")));
-        assertEquals("pending", order.status());
+        assertEquals(OrderStatus.PENDING, order.status());
     }
 
     @Test
@@ -65,11 +66,11 @@ class OrderRepositoryTest {
         assertEquals(1, updated);
 
         OrderRepository.StoredOrder order = repository.findById(id);
-        assertEquals("paid", order.status());
+        assertEquals(OrderStatus.PAID, order.status());
     }
 
     @Test
-    void transition_usesLowercaseValue() {
+    void transition_usesUppercaseValue() {
         String id = repository.insertPending("user-1", List.of(
                 new orders.api.dto.Item("sku-1", 1, new BigDecimal("1000"))), new BigDecimal("1000"));
 
@@ -77,7 +78,7 @@ class OrderRepositoryTest {
 
         String stored = jdbcTemplate.queryForObject(
                 "SELECT status FROM orders WHERE id = ?", String.class, id);
-        assertEquals("paid", stored);
+        assertEquals("PAID", stored);
     }
 
     @Test
@@ -125,5 +126,75 @@ class OrderRepositoryTest {
     @Test
     void isReady_liveDatabase_returnsTrue() {
         assertTrue(repository.isReady());
+    }
+
+    @Test
+    void transition_rejectedWithDuty_setsReleasePending() {
+        String id = repository.insertPending("user-1", List.of(
+                new orders.api.dto.Item("sku-1", 1, new BigDecimal("1000"))), new BigDecimal("1000"));
+
+        int updated = repository.transition(id, OrderStatus.REJECTED, true);
+        assertEquals(1, updated);
+
+        OrderRepository.StoredOrder order = repository.findById(id);
+        assertEquals(OrderStatus.REJECTED, order.status());
+        assertEquals(Boolean.TRUE, jdbcTemplate.queryForObject(
+                "SELECT release_pending FROM orders WHERE id = ?", Boolean.class, id));
+        assertTrue(repository.findReleasePendingIds().contains(id));
+    }
+
+    @Test
+    void transition_defaultNoDuty_keepsReleasePendingFalse() {
+        String id = repository.insertPending("user-1", List.of(
+                new orders.api.dto.Item("sku-1", 1, new BigDecimal("1000"))), new BigDecimal("1000"));
+
+        repository.transition(id, OrderStatus.REJECTED);
+
+        assertEquals(Boolean.FALSE, jdbcTemplate.queryForObject(
+                "SELECT release_pending FROM orders WHERE id = ?", Boolean.class, id));
+        assertTrue(repository.findReleasePendingIds().isEmpty());
+    }
+
+    @Test
+    void transitionWithDuty_stillOnlyOnce() {
+        String id = repository.insertPending("user-1", List.of(
+                new orders.api.dto.Item("sku-1", 1, new BigDecimal("1000"))), new BigDecimal("1000"));
+
+        int first = repository.transition(id, OrderStatus.REJECTED, true);
+        assertEquals(1, first);
+
+        int second = repository.transition(id, OrderStatus.PAID, false);
+        assertEquals(0, second);
+        assertEquals(OrderStatus.REJECTED, repository.findById(id).status());
+    }
+
+    @Test
+    void findReleasePendingIds_onlyRejectedWithDuty() {
+        List<orders.api.dto.Item> items = List.of(new orders.api.dto.Item("sku-1", 1, new BigDecimal("1000")));
+        String dutyRejected = repository.insertPending("u-1", items, new BigDecimal("1000"));
+        String cleanRejected = repository.insertPending("u-2", items, new BigDecimal("1000"));
+        String paid = repository.insertPending("u-3", items, new BigDecimal("1000"));
+        String pending = repository.insertPending("u-4", items, new BigDecimal("1000"));
+
+        repository.transition(dutyRejected, OrderStatus.REJECTED, true);
+        repository.transition(cleanRejected, OrderStatus.REJECTED, false);
+        repository.transition(paid, OrderStatus.PAID);
+
+        List<String> found = repository.findReleasePendingIds();
+        assertEquals(List.of(dutyRejected), found);
+    }
+
+    @Test
+    void clearReleaseDuty_onlyRejectedWithDuty() {
+        List<orders.api.dto.Item> items = List.of(new orders.api.dto.Item("sku-1", 1, new BigDecimal("1000")));
+        String id = repository.insertPending("u-1", items, new BigDecimal("1000"));
+        repository.transition(id, OrderStatus.REJECTED, true);
+
+        int cleared = repository.clearReleaseDuty(id);
+        assertEquals(1, cleared);
+        assertTrue(repository.findReleasePendingIds().isEmpty());
+
+        // clearing again is a no-op
+        assertEquals(0, repository.clearReleaseDuty(id));
     }
 }

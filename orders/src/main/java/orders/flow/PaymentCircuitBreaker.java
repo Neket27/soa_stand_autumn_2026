@@ -25,9 +25,9 @@ public class PaymentCircuitBreaker {
         long now = System.currentTimeMillis();
         if (state == State.HALF_OPEN) {
             if (now - halfOpenSince > probeWindowMs) {
-                // Watchdog: the released probe never reported an outcome (dead worker).
-                // A live probe reports within ~3 s (charge + retry + reconcile), so
-                // release a fresh probe now; at most one probe is in flight.
+                // Watchdog: выпущенный проб так и не сообщил исход (мертвый воркер).
+                // Живой проб сообщает за ~3 с (charge + retry + reconcile), поэтому
+                // выпускаем новый проб сейчас; одновременно в полёте не более одного проба.
                 halfOpenSince = now;
                 return true;
             }
@@ -42,11 +42,11 @@ public class PaymentCircuitBreaker {
     }
 
     /**
-     * Payment answered with an HTTP response (any status). The unavailability
-     * hypothesis is refuted, so the breaker closes even from OPEN: e.g. in S3/S5 a
-     * charge times out while Payment is up and the immediate reconciliation GET
-     * proves it. A response can never arrive during a real blackhole (the mock
-     * hangs instead), so the outage budget is untouched.
+     * Payment ответил HTTP-ответом (любым статусом). Гипотеза о недоступности
+     * опровергнута, поэтому брейкер закрывается даже из OPEN: например, в S3/S5
+     * списание тайм-аутится, пока Payment работает, и немедленный reconciliation-GET
+     * это подтверждает. В реальном blackhole ответить невозможно (мок висит),
+     * поэтому бюджет отказа не затрагивается.
      */
     public synchronized void onReachable() {
         if (state != State.CLOSED) {
@@ -55,9 +55,9 @@ public class PaymentCircuitBreaker {
     }
 
     /**
-     * No response from Payment (timeout / connection error). No-op while already
-     * OPEN: late timeouts of charges that were in flight when the breaker opened
-     * must not restart the open window.
+     * От Payment нет ответа (тайм-аут / ошибка соединения). No-op, пока уже
+     * OPEN: поздние тайм-ауты списаний, которые были в полёте, когда брейкер
+     * открылся, не должны перезапускать окно открытого состояния.
      */
     public synchronized void onUnavailable() {
         if (state != State.OPEN) {

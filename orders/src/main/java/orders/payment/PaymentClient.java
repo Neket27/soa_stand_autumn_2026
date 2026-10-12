@@ -75,9 +75,9 @@ public class PaymentClient {
     }
 
     /**
-     * Three states: a failed lookup must NOT be reported as "no charge" —
-     * "verified empty" and "unable to verify" lead to different decisions
-     * (reject vs stay pending).
+     * Три состояния: неудачный запрос НЕЛЬЗЯ сообщать как "нет списания" —
+     * "проверено пусто" и "не удалось проверить" приводят к разным решениям
+     * (reject vs остаться pending).
      */
     public enum ReconciliationResult {
         CHARGED, NOT_CHARGED, UNKNOWN

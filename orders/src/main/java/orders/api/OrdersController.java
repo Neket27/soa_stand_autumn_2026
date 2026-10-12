@@ -30,7 +30,7 @@ public class OrdersController {
     @ResponseStatus(HttpStatus.CREATED)
     public OrderCreated createOrder(@Valid @RequestBody OrderRequest request) {
         CreateOrderService.CreateResult result = createOrderService.createOrder(request);
-        return new OrderCreated(result.orderId(), result.status().value());
+        return new OrderCreated(result.orderId(), result.status().name().toLowerCase());
     }
 
     @GetMapping("/orders/{id}")

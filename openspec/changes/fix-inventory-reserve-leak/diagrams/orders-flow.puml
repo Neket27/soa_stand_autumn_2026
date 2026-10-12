@@ -1,0 +1,109 @@
+' Orders — ключевые потоки (S5 lost response + S1 decline с durable release).
+' Паттерны подписаны прямо на схеме. Секвенс-диаграмма не требует Graphviz.
+
+@startuml OrdersFlow
+title Orders — ключевые потоки (S5 lost response + S1 decline с durable release)
+
+actor Раннер
+participant "HTTP API" as API
+participant "CreateOrderService" as COS
+database "Postgres" as DB
+participant "InMemoryChargeDispatcher\n(reaper 500 мс)" as BW
+participant "OrderCharger" as OC
+participant "PaymentClient" as PC
+participant "InventoryClient" as IC
+participant "Inventory" as INV
+participant "Payment" as PAY
+
+== 1. POST /orders -- синхронно, бюджет 1 с ==
+Раннер -> API: POST /orders
+API -> COS: createOrder()
+COS -> DB: INSERT pending
+note right of DB
+  <b>DB как source of truth</b>
+  заказ в БД до внешних вызовов:
+  crash на любом шаге не теряет заказ
+end note
+COS -> IC: reserve() [тайм-аут 890 мс]
+IC -> INV: POST /reservations
+INV --> IC: 201
+COS -> BW: enqueue(orderId)
+API --> Раннер: 201 {id, status: "pending"}
+note right of API
+  <b>Fast sync / async split</b>
+  charge не на HTTP-пути => бюджет 1 с
+  при любом поведении Payment
+end note
+
+== 2. Фоновый charge (single-flight на заказ) ==
+BW -> OC: charge(orderId, deadline 25 с)
+OC -> PC: charge()
+PC -> PAY: POST /payments\nIdempotency-Key: order_id
+note right of PC
+  <b>Idempotent Command</b>
+  ретраи с тем же ключом
+  не дают двойного списания
+end note
+PAY --> PC: (ответ потерян -- S5)
+note right of PAY
+  «нет ответа» != «не списали»
+  -- операция выполнена
+end note
+OC -> PC: reconcile()
+PC -> PAY: GET /payments?order_id=
+note right of PC
+  <b>Reconciliation</b>
+  единственный способ узнать истину
+  после NETWORK
+end note
+PAY --> PC: [charge] -> CHARGED
+OC -> DB: UPDATE status='paid'\nWHERE status='pending'
+note right of DB
+  <b>CAS</b>: второй воркер получит 0
+  строк -- перехода не будет
+end note
+
+== 3. S1: 402 от банка -- rejected + durable release ==
+OC -> PC: charge()
+PC -> PAY: POST /payments (тот же ключ)
+PAY --> PC: 402
+OC -> IC: release()
+IC -> INV: DELETE /reservations/{id}
+alt 204 -- успешно
+  INV --> IC: 204
+  OC -> DB: rejected, release_pending=FALSE
+else тайм-аут / ошибка (L1)
+  INV --> IC: (нет ответа)
+  OC -> DB: rejected, release_pending=TRUE
+  note right of DB
+    <b>Durable Compensating Action</b>
+    обязанность записана в одном
+    атомарном UPDATE со статусом;
+    переживает рестарт
+  end note
+  BW -> IC: release-sweep (каждые 500 мс)
+  IC -> INV: DELETE /reservations/{id}
+  INV --> IC: 204 (идемпотентен)
+  BW -> DB: release_pending=FALSE
+end
+
+== 4. L2: потерянный ответ на reserve ==
+COS -> IC: reserve()
+IC -> INV: POST /reservations
+INV --> IC: (тайм-аут -- резерв мог создаться)
+COS -> DB: rejected, release_pending=TRUE
+note right of COS
+  На HTTP-пути второго вызова нет
+  (бюджет 1 с) -- уборка в фоне,
+  DELETE идемпотентен (204 и без резерва)
+end note
+BW -> IC: release-sweep
+IC -> INV: DELETE /reservations/{id}
+INV --> IC: 204
+BW -> DB: release_pending=FALSE
+note right of DB
+  <b>At-least-once + идемпотентная
+  компенсация</b>: rejected чистый
+  гарантированно, не «один раз попробовали»
+end note
+@enduml

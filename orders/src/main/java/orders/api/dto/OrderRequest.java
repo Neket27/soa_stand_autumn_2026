@@ -11,7 +11,7 @@ public record OrderRequest(
         @NotBlank @JsonProperty("user_id") String userId,
         @NotEmpty @JsonProperty("items") List<Item> items) {
 
-    /** Order amount rule: sum of qty * price_cents over all items, in cents. */
+    /** Правило суммы заказа: сумма qty * price_cents по всем позициям, в центах. */
     public BigDecimal amountCents() {
         return items.stream()
                 .reduce(BigDecimal.ZERO, (sum, i) ->

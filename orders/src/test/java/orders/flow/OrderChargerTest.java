@@ -24,7 +24,7 @@ class OrderChargerTest {
 
     @Test
     void charge_alreadyPaid_returnsTrue() {
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-1", "user", "paid", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-1", "user", OrderStatus.PAID, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-1")).thenReturn(order);
 
         assertTrue(charger.charge("order-1", Duration.ofSeconds(5)));
@@ -33,7 +33,7 @@ class OrderChargerTest {
 
     @Test
     void charge_alreadyRejected_returnsTrue() {
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-1", "user", "rejected", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-1", "user", OrderStatus.REJECTED, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-1")).thenReturn(order);
 
         assertTrue(charger.charge("order-1", Duration.ofSeconds(5)));
@@ -48,7 +48,7 @@ class OrderChargerTest {
 
     @Test
     void charge_charged_returnsTrue() {
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-1", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-1", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-1")).thenReturn(order);
         when(orderRepository.transition("order-1", OrderStatus.PAID)).thenReturn(1);
         when(paymentClient.charge(eq("order-1"), eq(new BigDecimal("1000")), any(Duration.class)))
@@ -63,22 +63,22 @@ class OrderChargerTest {
 
     @Test
     void charge_declined_returnsTrue() {
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-1", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-1", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-1")).thenReturn(order);
         when(paymentClient.charge(anyString(), any(BigDecimal.class), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.DECLINED);
-        when(orderRepository.transition("order-1", OrderStatus.REJECTED)).thenReturn(1);
+        when(orderRepository.transition("order-1", OrderStatus.REJECTED, false)).thenReturn(1);
         when(inventoryClient.release(anyString(), any(Duration.class))).thenReturn(true);
 
         assertTrue(charger.charge("order-1", Duration.ofSeconds(5)));
         verify(paymentClient).charge(eq("order-1"), eq(new BigDecimal("1000")), any(Duration.class));
         verify(inventoryClient).release(eq("order-1"), any(Duration.class));
-        verify(orderRepository).transition("order-1", OrderStatus.REJECTED);
+        verify(orderRepository).transition("order-1", OrderStatus.REJECTED, false);
     }
 
     @Test
     void charge_serverError_thenSucceed_returnsTrue() {
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-3", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-3", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-3")).thenReturn(order);
         when(paymentClient.charge(eq("order-3"), eq(new BigDecimal("1000")), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.SERVER_ERROR)
@@ -91,12 +91,12 @@ class OrderChargerTest {
 
     @Test
     void charge_serverErrorDeclined_returnsTrue() {
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-8", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-8", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-8")).thenReturn(order);
         when(paymentClient.charge(eq("order-8"), eq(new BigDecimal("1000")), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.SERVER_ERROR)
                 .thenReturn(PaymentClient.ChargeResult.DECLINED);
-        when(orderRepository.transition("order-8", OrderStatus.REJECTED)).thenReturn(1);
+        when(orderRepository.transition("order-8", OrderStatus.REJECTED, false)).thenReturn(1);
         when(inventoryClient.release(anyString(), any(Duration.class))).thenReturn(true);
 
         assertTrue(charger.charge("order-8", Duration.ofSeconds(5)));
@@ -106,7 +106,7 @@ class OrderChargerTest {
 
     @Test
     void charge_networkReconciledCharged_returnsTrue() {
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-4", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-4", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-4")).thenReturn(order);
         when(paymentClient.charge(anyString(), any(BigDecimal.class), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.NETWORK);
@@ -125,21 +125,21 @@ class OrderChargerTest {
 
     @Test
     void charge_networkNotCharged_rejectsAndOpensBreaker() {
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-5", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-5", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-5")).thenReturn(order);
         when(paymentClient.charge(anyString(), any(BigDecimal.class), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.NETWORK);
         when(paymentClient.reconcile(eq("order-5"), any(Duration.class)))
                 .thenReturn(PaymentClient.ReconciliationResult.NOT_CHARGED);
         when(inventoryClient.release(anyString(), any(Duration.class))).thenReturn(true);
-        when(orderRepository.transition("order-5", OrderStatus.REJECTED)).thenReturn(1);
+        when(orderRepository.transition("order-5", OrderStatus.REJECTED, false)).thenReturn(1);
 
         assertTrue(charger.charge("order-5", Duration.ofSeconds(5)));
         verify(paymentClient).charge(eq("order-5"), eq(new BigDecimal("1000")), any(Duration.class));
         // single reconciliation GET after the NETWORK outcome
         verify(paymentClient, times(1)).reconcile(eq("order-5"), any(Duration.class));
         verify(inventoryClient).release(eq("order-5"), any(Duration.class));
-        verify(orderRepository).transition("order-5", OrderStatus.REJECTED);
+        verify(orderRepository).transition("order-5", OrderStatus.REJECTED, false);
         // breaker should be OPEN after NETWORK with no charge found
         assertEquals(PaymentCircuitBreaker.State.OPEN, circuitBreaker.getState());
     }
@@ -148,7 +148,7 @@ class OrderChargerTest {
     void charge_networkUnknown_staysPending() {
         // A failed lookup is "unable to verify", not "no charge": the order must
         // not be rejected (the money may have been charged), it stays pending.
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-15", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-15", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-15")).thenReturn(order);
         when(paymentClient.charge(eq("order-15"), eq(new BigDecimal("1000")), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.NETWORK);
@@ -170,14 +170,14 @@ class OrderChargerTest {
         PaymentCircuitBreaker breaker = mock(PaymentCircuitBreaker.class);
         when(breaker.allow()).thenReturn(true);
         OrderCharger c = new OrderCharger(inventoryClient, paymentClient, orderRepository, breaker, 1000, 2000);
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-16", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-16", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-16")).thenReturn(order);
         when(paymentClient.charge(eq("order-16"), eq(new BigDecimal("1000")), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.NETWORK);
         when(paymentClient.reconcile(eq("order-16"), any(Duration.class)))
                 .thenReturn(PaymentClient.ReconciliationResult.NOT_CHARGED);
         when(inventoryClient.release(anyString(), any(Duration.class))).thenReturn(true);
-        when(orderRepository.transition("order-16", OrderStatus.REJECTED)).thenReturn(1);
+        when(orderRepository.transition("order-16", OrderStatus.REJECTED, false)).thenReturn(1);
 
         assertTrue(c.charge("order-16", Duration.ofSeconds(5)));
 
@@ -191,7 +191,7 @@ class OrderChargerTest {
         // A charge executed in a previous attempt (response lost) is found by
         // the idempotent POST itself: same Idempotency-Key and body -> 200,
         // which PaymentClient maps to CHARGED. No reconciliation GET needed.
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-9", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-9", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-9")).thenReturn(order);
         when(paymentClient.charge(eq("order-9"), eq(new BigDecimal("1000")), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.CHARGED);
@@ -205,7 +205,7 @@ class OrderChargerTest {
 
     @Test
     void charge_deadlineExpires_returnsFalse() {
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-10", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-10", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-10")).thenReturn(order);
         when(paymentClient.charge(anyString(), any(BigDecimal.class), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.NETWORK);
@@ -216,15 +216,15 @@ class OrderChargerTest {
 
     @Test
     void charge_transitionCompetitor_returnsTrue() {
-        // Another thread/process transitioned to "paid" between findById and transition
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-11", "user", "pending", new BigDecimal("1000"), "[]");
+        // Another thread/process transitioned to OrderStatus.PAID between findById and transition
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-11", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-11")).thenReturn(order);
         when(paymentClient.charge(eq("order-11"), eq(new BigDecimal("1000")), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.CHARGED);
-        // First transition fails (another process did it), but findById now returns "paid"
+        // First transition fails (another process did it), but findById now returns OrderStatus.PAID
         when(orderRepository.transition("order-11", OrderStatus.PAID)).thenReturn(0);
         when(orderRepository.findById("order-11")).thenReturn(
-                new OrderRepository.StoredOrder("order-11", "user", "paid", new BigDecimal("1000"), "[]"));
+                new OrderRepository.StoredOrder("order-11", "user", OrderStatus.PAID, new BigDecimal("1000"), "[]"));
 
         assertTrue(charger.charge("order-11", Duration.ofSeconds(5)));
     }
@@ -235,16 +235,16 @@ class OrderChargerTest {
         PaymentCircuitBreaker breaker = new PaymentCircuitBreaker(50, 10000);
         breaker.onUnavailable();
         OrderCharger c = new OrderCharger(inventoryClient, paymentClient, orderRepository, breaker, 1000, 2000);
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-17", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-17", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-17")).thenReturn(order);
         when(paymentClient.charge(eq("order-17"), eq(new BigDecimal("1000")), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.DECLINED);
         when(inventoryClient.release(anyString(), any(Duration.class))).thenReturn(true);
-        when(orderRepository.transition("order-17", OrderStatus.REJECTED)).thenReturn(1);
+        when(orderRepository.transition("order-17", OrderStatus.REJECTED, false)).thenReturn(1);
 
         assertTrue(c.charge("order-17", Duration.ofSeconds(10)));
         verify(inventoryClient).release(eq("order-17"), any(Duration.class));
-        verify(orderRepository).transition("order-17", OrderStatus.REJECTED);
+        verify(orderRepository).transition("order-17", OrderStatus.REJECTED, false);
         assertEquals(PaymentCircuitBreaker.State.CLOSED, breaker.getState());
     }
 
@@ -253,7 +253,7 @@ class OrderChargerTest {
         PaymentCircuitBreaker breaker = new PaymentCircuitBreaker(50, 10000);
         breaker.onUnavailable();
         OrderCharger c = new OrderCharger(inventoryClient, paymentClient, orderRepository, breaker, 1000, 2000);
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-18", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-18", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-18")).thenReturn(order);
         when(paymentClient.charge(eq("order-18"), eq(new BigDecimal("1000")), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.SERVER_ERROR)
@@ -270,7 +270,7 @@ class OrderChargerTest {
 
     @Test
     void charge_serverErrorThenNetwork_reconciles() {
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-19", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-19", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-19")).thenReturn(order);
         when(paymentClient.charge(eq("order-19"), eq(new BigDecimal("1000")), any(Duration.class)))
                 .thenReturn(PaymentClient.ChargeResult.SERVER_ERROR)
@@ -285,12 +285,60 @@ class OrderChargerTest {
     }
 
     @Test
+    void charge_declined_releaseFails_setsReleaseDuty() {
+        // L1: inline DELETE failed — the order is still rejected, but the durable
+        // duty (release_pending=true) is recorded atomically for the reaper sweep.
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-20", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
+        when(orderRepository.findById("order-20")).thenReturn(order);
+        when(paymentClient.charge(eq("order-20"), eq(new BigDecimal("1000")), any(Duration.class)))
+                .thenReturn(PaymentClient.ChargeResult.DECLINED);
+        when(inventoryClient.release(eq("order-20"), any(Duration.class))).thenReturn(false);
+        when(orderRepository.transition("order-20", OrderStatus.REJECTED, true)).thenReturn(1);
+
+        assertTrue(charger.charge("order-20", Duration.ofSeconds(5)));
+        verify(inventoryClient).release(eq("order-20"), any(Duration.class));
+        verify(orderRepository).transition("order-20", OrderStatus.REJECTED, true);
+    }
+
+    @Test
+    void charge_serverErrorDeclined_releaseFails_setsReleaseDuty() {
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-21", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
+        when(orderRepository.findById("order-21")).thenReturn(order);
+        when(paymentClient.charge(eq("order-21"), eq(new BigDecimal("1000")), any(Duration.class)))
+                .thenReturn(PaymentClient.ChargeResult.SERVER_ERROR)
+                .thenReturn(PaymentClient.ChargeResult.DECLINED);
+        when(inventoryClient.release(eq("order-21"), any(Duration.class))).thenReturn(false);
+        when(orderRepository.transition("order-21", OrderStatus.REJECTED, true)).thenReturn(1);
+
+        assertTrue(charger.charge("order-21", Duration.ofSeconds(5)));
+        verify(paymentClient, times(2)).charge(eq("order-21"), eq(new BigDecimal("1000")), any(Duration.class));
+        verify(orderRepository).transition("order-21", OrderStatus.REJECTED, true);
+    }
+
+    @Test
+    void charge_networkNotCharged_releaseFails_setsReleaseDuty() {
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-22", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
+        when(orderRepository.findById("order-22")).thenReturn(order);
+        when(paymentClient.charge(eq("order-22"), eq(new BigDecimal("1000")), any(Duration.class)))
+                .thenReturn(PaymentClient.ChargeResult.NETWORK);
+        when(paymentClient.reconcile(eq("order-22"), any(Duration.class)))
+                .thenReturn(PaymentClient.ReconciliationResult.NOT_CHARGED);
+        when(inventoryClient.release(eq("order-22"), any(Duration.class))).thenReturn(false);
+        when(orderRepository.transition("order-22", OrderStatus.REJECTED, true)).thenReturn(1);
+
+        assertTrue(charger.charge("order-22", Duration.ofSeconds(5)));
+        verify(inventoryClient).release(eq("order-22"), any(Duration.class));
+        verify(orderRepository).transition("order-22", OrderStatus.REJECTED, true);
+        assertEquals(PaymentCircuitBreaker.State.OPEN, circuitBreaker.getState());
+    }
+
+    @Test
     void charge_breakerOpen_waitsAndRetries() throws InterruptedException {
         // Set breaker to OPEN
         circuitBreaker.onUnavailable();
         assertEquals(PaymentCircuitBreaker.State.OPEN, circuitBreaker.getState());
 
-        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-12", "user", "pending", new BigDecimal("1000"), "[]");
+        OrderRepository.StoredOrder order = new OrderRepository.StoredOrder("order-12", "user", OrderStatus.PENDING, new BigDecimal("1000"), "[]");
         when(orderRepository.findById("order-12")).thenReturn(order);
         // When breaker transitions to HALF_OPEN, charge succeeds
         when(paymentClient.charge(eq("order-12"), eq(new BigDecimal("1000")), any(Duration.class)))

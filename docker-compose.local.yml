@@ -1,0 +1,97 @@
+# DEV-ONLY локальный harness: 3 реплики orders + 1 Kafka (KRaft) +
+# 1 Postgres + заглушки.
+#
+#   docker compose -f docker-compose.local.yml up -d --build
+#   bash local/load.sh 30        # 30 заказов round-robin на 3 реплики
+#
+# Проверка: все заказы доходят до terminal (paid), ни один не потерян, Kafka-транспорт
+# работает на N реплик.
+name: soa-local-kafka
+
+services:
+  kafka:
+    image: apache/kafka:3.7.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 40
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: orders
+      POSTGRES_USER: orders
+      POSTGRES_PASSWORD: orders
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders -d orders"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mocks:
+    build: ./mocks
+    environment:
+      MOCKS_ADMIN_TOKEN: local-kafka-token
+      ORDERS_URL: http://orders1:8080
+    ports:
+      - "127.0.0.1:8095:8080"
+    healthcheck:
+      test: ["CMD", "/mocks", "-healthcheck"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  orders1:
+    build: ./orders
+    environment: &orders-env
+      PORT: "8080"
+      DATABASE_URL: postgres://orders:orders@postgres:5432/orders?sslmode=disable
+      PAYMENT_URL: http://mocks:8080
+      INVENTORY_URL: http://mocks:8080
+      ORDERS_DISPATCH: kafka
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_GROUP_ID: orders-charge
+      ORDERS_OUTBOX_ENABLED: "true"
+      BREAKER_STORE: ${BREAKER_STORE:-db}
+      REAPER_LEADER: ${REAPER_LEADER:-postgres}
+    ports:
+      - "127.0.0.1:8081:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      mocks: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+
+  orders2:
+    build: ./orders
+    environment: *orders-env
+    ports:
+      - "127.0.0.1:8082:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      mocks: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+
+  orders3:
+    build: ./orders
+    environment: *orders-env
+    ports:
+      - "127.0.0.1:8083:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      mocks: { condition: service_healthy }
+      kafka: { condition: service_healthy }

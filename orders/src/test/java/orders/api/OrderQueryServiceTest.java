@@ -1,6 +1,7 @@
 package orders.api;
 
 import orders.api.dto.Order;
+import orders.flow.OrderStatus;
 import orders.store.OrderRepository;
 import org.junit.jupiter.api.Test;
 
@@ -17,7 +18,7 @@ class OrderQueryServiceTest {
     @Test
     void getOrder_found_returnsMappedDto() {
         when(orderRepository.findById("order-1")).thenReturn(
-                new OrderRepository.StoredOrder("order-1", "u-1", "paid", new BigDecimal("99800"), "[]"));
+                new OrderRepository.StoredOrder("order-1", "u-1", OrderStatus.PAID, new BigDecimal("99800"), "[]"));
 
         Order order = service.getOrder("order-1");
 

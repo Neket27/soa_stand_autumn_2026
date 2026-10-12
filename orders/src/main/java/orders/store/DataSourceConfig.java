@@ -10,9 +10,9 @@ import javax.sql.DataSource;
 import java.net.URI;
 
 /**
- * Converts the stand-provided DATABASE_URL (Heroku form
- * postgres://user:pass@host:port/db?query) into a JDBC data source.
- * JdbcTemplate is auto-configured by Spring Boot from this single DataSource.
+ * Преобразует DATABASE_URL, предоставленный стендом (формат Heroku:
+ * postgres://user:pass@host:port/db?query), в JDBC data source.
+ * JdbcTemplate Spring Boot настраивает автоматически из этого единственного DataSource.
  */
 @Configuration
 @ConditionalOnProperty(name = "DATABASE_URL")

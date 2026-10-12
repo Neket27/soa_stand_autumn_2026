@@ -1,6 +1,9 @@
 package orders.api;
 
-/** An order id that Orders has never accepted (no row in the store). */
+import lombok.Getter;
+
+/** Идентификатор заказа, который Orders никогда не принимал (нет строки в хранилище). */
+@Getter
 public class OrderNotFoundException extends RuntimeException {
 
     private final String orderId;
@@ -10,7 +13,4 @@ public class OrderNotFoundException extends RuntimeException {
         this.orderId = orderId;
     }
 
-    public String getOrderId() {
-        return orderId;
-    }
 }
