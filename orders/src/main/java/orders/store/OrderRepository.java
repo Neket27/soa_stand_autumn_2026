@@ -1,117 +1,131 @@
 package orders.store;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import orders.api.dto.Item;
-import orders.flow.OrderStatus;
-import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import orders.api.dto.Item;
+import orders.api.dto.Order;
+import orders.flow.OrderStatus;
 
-import javax.sql.DataSource;
-import java.math.BigDecimal;
-import java.sql.Connection;
 import java.util.List;
-import java.util.UUID;
 
+/**
+ * Репозиторий для работы с таблицей orders в PostgreSQL.
+ *
+ * === СХЕМА ТАБЛИЦЫ ===
+ * CREATE TABLE orders (
+ *     id           TEXT PRIMARY KEY,
+ *     user_id      TEXT NOT NULL,
+ *     status       TEXT NOT NULL,  -- PENDING, PAID, REJECTED
+ *     amount_cents BIGINT NOT NULL,
+ *     items        JSONB NOT NULL,
+ *     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+ *     release_pending BOOLEAN DEFAULT FALSE  -- нужно ли снять резерв
+ * );
+ *
+ * === ЧТО СДЕЛАТЬ САМОМУ (S1-S2) ===
+ *
+ * S1: При отклонении банком:
+ *     — Перевести заказ в REJECTED
+ *     — Установить release_pending = TRUE
+ *     — Снять резерв через Inventory API
+ *     — Если снятие удалось — release_pending = FALSE
+ *
+ * S2: При 500 от Payment:
+ *     — Оставить заказ в PENDING
+ *     — Consumer должен повторить попытку
+ *     — Если retry исчерпан — перевести в REJECTED? Или оставить PENDING?
+ */
 @Repository
 public class OrderRepository {
 
-    private final ObjectMapper objectMapper;
-    private final JdbcTemplate jdbcTemplate;
-    private final boolean usingPostgres;
+    private final JdbcTemplate jdbc;
 
-    public OrderRepository(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
-        this.jdbcTemplate = jdbcTemplate;
-        this.objectMapper = objectMapper;
-        this.usingPostgres = detectPostgres(jdbcTemplate.getDataSource());
+    public OrderRepository(JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
     }
 
-    private static boolean detectPostgres(DataSource dataSource) {
-        try (Connection c = dataSource.getConnection()) {
-            return "PostgreSQL".equalsIgnoreCase(c.getMetaData().getDatabaseProductName());
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    public String insertPending(String userId, List<Item> items, BigDecimal amountCents) {
-        String id = UUID.randomUUID().toString();
-        String itemsJson;
-        try {
-            itemsJson = objectMapper.writeValueAsString(items);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException("failed to serialize items", e);
-        }
-
-        String sql;
-        if (usingPostgres) {
-            sql = "INSERT INTO orders (id, user_id, status, amount_cents, items, created_at) VALUES (?, ?, 'PENDING', ?, CAST(? AS JSONB), now())";
-        } else {
-            sql = "INSERT INTO orders (id, user_id, status, amount_cents, items, created_at) VALUES (?, ?, 'PENDING', ?, ?, now())";
-        }
-
-        jdbcTemplate.update(sql, id, userId, amountCents, itemsJson);
-        return id;
-    }
-
-    public int transition(String id, OrderStatus to) {
-        return transition(id, to, false);
+    public void insertPending(String orderId, String userId, long amountCents, List<Item> items) {
+        String sql = """
+            INSERT INTO orders (id, user_id, status, amount_cents, items)
+            VALUES (?, ?, 'PENDING', ?, ?::jsonb)
+            """;
+        String itemsJson = toJson(items);
+        jdbc.update(sql, orderId, userId, amountCents, itemsJson);
     }
 
     /**
-     * Переводит pending-заказ в терминальный статус, атомарно записывая в том же
-     * UPDATE durable-обязанность «снять резерв» (окна, где заказ уже rejected,
-     * а обязанность ещё не записана, не существует).
+     * Атомарный переход заказа в новый статус.
+     * Используется для предотвращения двойной оплаты.
+     *
+     * === ЧТО СДЕЛАТЬ САМОМУ ===
+     *
+     * Условие WHERE status = 'PENDING' гарантирует, что заказ
+     * не будет переведён дважды (например, двумя consumer-репликами).
      */
-    public int transition(String id, OrderStatus to, boolean releasePending) {
-        return jdbcTemplate.update(
-                "UPDATE orders SET status = ?, release_pending = ? WHERE id = ? AND status = 'PENDING'",
-                to.name(), releasePending, id);
+    public boolean transition(String orderId, OrderStatus newStatus) {
+        String sql = "UPDATE orders SET status = ? WHERE id = ? AND status = 'PENDING'";
+        int updated = jdbc.update(sql, newStatus.name(), orderId);
+        return updated > 0;
     }
 
-    /** Rejected-заказы, у которых ещё стоит release duty (release-sweep в reaper). */
-    public List<String> findReleasePendingIds() {
-        return jdbcTemplate.queryForList(
-                "SELECT id FROM orders WHERE status = 'REJECTED' AND release_pending", String.class);
+    public Order findById(String orderId) {
+        String sql = "SELECT id, status, amount_cents FROM orders WHERE id = ?";
+        List<Order> results = jdbc.query(sql,
+                (rs, rowNum) -> new Order(
+                        rs.getString("id"),
+                        rs.getString("status"),
+                        rs.getLong("amount_cents")
+                ),
+                orderId
+        );
+        return results.isEmpty() ? null : results.get(0);
     }
 
-    /** Снять release duty, когда снятие резерва подтверждено (DELETE 204). */
-    public int clearReleaseDuty(String id) {
-        return jdbcTemplate.update(
-                "UPDATE orders SET release_pending = FALSE WHERE id = ? AND status = 'REJECTED' AND release_pending",
-                id);
+    public OrderStatus getStatus(String orderId) {
+        String sql = "SELECT status FROM orders WHERE id = ?";
+        List<String> results = jdbc.queryForList(sql, String.class, orderId);
+        return results.isEmpty() ? null : OrderStatus.valueOf(results.get(0));
     }
 
-    public StoredOrder findById(String id) {
-        try {
-            return jdbcTemplate.queryForObject(
-                    "SELECT id, user_id, status, amount_cents, items FROM orders WHERE id = ?",
-                    (rs, rowNum) -> new StoredOrder(
-                            rs.getString("id"),
-                            rs.getString("user_id"),
-                            OrderStatus.valueOf(rs.getString("status")),
-                            rs.getBigDecimal("amount_cents"),
-                            rs.getString("items")
-                    ), id);
-        } catch (EmptyResultDataAccessException e) {
-            return null;
-        }
-    }
-
+    /**
+     * Получить список PENDING заказов для reaper.
+     * Reaper периодически проверяет PENDING заказы и повторяет попытку.
+     */
     public List<String> findPendingIds() {
-        return jdbcTemplate.queryForList(
-                "SELECT id FROM orders WHERE status = 'PENDING' ORDER BY created_at", String.class);
+        String sql = "SELECT id FROM orders WHERE status = 'PENDING'";
+        return jdbc.queryForList(sql, String.class);
     }
 
-    /** True, когда база доступна — сервис готов принимать заказы. */
-    public boolean isReady() {
-        try {
-            return jdbcTemplate.queryForObject("SELECT 1", Integer.class) != null;
-        } catch (Exception e) {
-            return false;
+    /**
+     * Получить заказы с release_pending = TRUE.
+     * Это REJECTED заказы, у которых не удалось снять резерв.
+     */
+    public List<String> findReleasePendingIds() {
+        String sql = "SELECT id FROM orders WHERE release_pending = TRUE";
+        return jdbc.queryForList(sql, String.class);
+    }
+
+    public void setReleasePending(String orderId, boolean pending) {
+        String sql = "UPDATE orders SET release_pending = ? WHERE id = ?";
+        jdbc.update(sql, pending, orderId);
+    }
+
+    public void isReady() {
+        jdbc.queryForObject("SELECT 1", Integer.class);
+    }
+
+    private String toJson(List<Item> items) {
+        // Простая сериализация JSON вручную
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < items.size(); i++) {
+            Item item = items.get(i);
+            if (i > 0) sb.append(",");
+            sb.append(String.format(
+                    "{\"sku\":\"%s\",\"qty\":%d,\"price_cents\":%d}",
+                    item.sku(), item.qty(), item.priceCents()
+            ));
         }
+        sb.append("]");
+        return sb.toString();
     }
-
-    public static record StoredOrder(String id, String userId, OrderStatus status, BigDecimal amountCents, String itemsJson) {}
 }

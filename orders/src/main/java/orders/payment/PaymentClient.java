@@ -1,124 +1,103 @@
 package orders.payment;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.extern.slf4j.Slf4j;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
 
-import java.io.IOException;
-import java.math.BigDecimal;
-import java.net.URI;
-import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
+import java.util.Map;
 
-@Slf4j
-@Service
+/**
+ * HTTP-клиент для Payment API.
+ *
+ * === КАК РАБОТАЕТ ===
+ * POST {PAYMENT_URL}/payments с телом:
+ * {
+ *   "order_id": "...",
+ *   "amount_cents": 1000,
+ *   "currency": "RUB",
+ *   "idempotency-key": "..."
+ * }
+ *
+ * === КОДЫ ОТВЕТА ===
+ * 201 — платёж успешен (CHARGED)
+ * 402 — банк отклонил (DECLINED) — не ошибка, просто отказ
+ * 500 — внутренняя ошибка Payment (SERVER_ERROR) — нужно retry
+ * Сетевая ошибка — Payment недоступен (NETWORK) — нужно retry
+ *
+ * === ЧТО СДЕЛАТЬ САМОМУ (S1-S2) ===
+ *
+ * S1: Payment возвращает 402 на 10% запросов.
+ *     — Здесь уже всё обработано: 402 → DECLINED
+ *     — Проверь, что 402 не вызывает exception
+ *
+ * S2: Payment возвращает 500 на 33% запросов.
+ *     — Здесь уже всё обработано: 500 → SERVER_ERROR
+ *     — Но нужно убедиться, что Consumer делает retry
+ */
+@Component
 public class PaymentClient {
 
-    private final HttpClient httpClient;
-    private final String baseUrl;
-    private final ObjectMapper objectMapper;
+    private final RestTemplate restTemplate = new RestTemplate();
 
-    public PaymentClient(
-            @Value("${PAYMENT_URL}") String baseUrl,
-            @Value("${PAYMENT.CONNECT_TIMEOUT_MS:200}") int connectTimeoutMs,
-            ObjectMapper objectMapper) {
-        this.baseUrl = baseUrl;
-        this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(connectTimeoutMs))
-                .build();
-    }
-
-    public ChargeResult charge(String orderId, BigDecimal amountCents, Duration timeout) {
-        String body;
-        try {
-            body = objectMapper.writeValueAsString(
-                    new ChargeRequest(orderId, amountCents, "RUB"));
-        } catch (Exception e) {
-            throw new RuntimeException("failed to serialize charge request", e);
-        }
-
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + "/payments"))
-                .header("Content-Type", "application/json")
-                .header("Idempotency-Key", orderId)
-                .timeout(timeout)
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
-
-        try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            int status = response.statusCode();
-            if (status == 200 || status == 201) {
-                return ChargeResult.CHARGED;
-            } else if (status == 402) {
-                return ChargeResult.DECLINED;
-            } else {
-                return ChargeResult.SERVER_ERROR;
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return ChargeResult.NETWORK;
-        } catch (IOException e) {
-            log.warn("charge error: order={} ({})", orderId, e.getClass().getSimpleName());
-            return ChargeResult.NETWORK;
-        }
-    }
+    @Value("${PAYMENT_URL}")
+    private String paymentUrl;
 
     /**
-     * Три состояния: неудачный запрос НЕЛЬЗЯ сообщать как "нет списания" —
-     * "проверено пусто" и "не удалось проверить" приводят к разным решениям
-     * (reject vs остаться pending).
+     * Попытка оплаты заказа.
+     *
+     * === ЧТО СДЕЛАТЬ САМОМУ (S2) ===
+     *
+     * Sейчас при 500 возвращается SERVER_ERROR, и Consumer делает NAK.
+     * Но NAK без задержки может привести к бесконечному циклу.
+     *
+     * Вариант решения:
+     * 1. Добавить Idempotency-Key (уже есть в коде)
+     * 2. Добавить backoff в Consumer перед NAK
+     * 3. Использовать Dead Letter Topic для проблемных событий
      */
-    public enum ReconciliationResult {
-        CHARGED, NOT_CHARGED, UNKNOWN
-    }
+    public PaymentResult charge(String orderId) {
+        String idempotencyKey = "pay-" + orderId;
 
-    public ReconciliationResult reconcile(String orderId, Duration timeout) {
-        String encoded = URLEncoder.encode(orderId, StandardCharsets.UTF_8);
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + "/payments?order_id=" + encoded))
-                .timeout(timeout)
-                .GET()
-                .build();
+        Map<String, Object> body = Map.of(
+                "order_id", orderId,
+                "amount_cents", getAmountForOrder(orderId), // нужно передавать реальную сумму
+                "currency", "RUB",
+                "idempotency_key", idempotencyKey
+        );
 
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            if (response.statusCode() != 200) {
-                log.warn("reconcile non-200: order={} status={}", orderId, response.statusCode());
-                return ReconciliationResult.UNKNOWN;
-            }
-            JsonNode node = objectMapper.readTree(response.body());
-            if (!node.isArray()) {
-                log.warn("reconcile unexpected body: order={}", orderId);
-                return ReconciliationResult.UNKNOWN;
-            }
-            return !node.isEmpty() ? ReconciliationResult.CHARGED : ReconciliationResult.NOT_CHARGED;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("reconcile interrupted: order={}", orderId);
-            return ReconciliationResult.UNKNOWN;
+            var response = restTemplate.postForEntity(
+                    paymentUrl + "/payments",
+                    body,
+                    Map.class
+            );
+
+            return switch (response.getStatusCode().value()) {
+                case 200, 201 -> new PaymentResult(PaymentStatus.CHARGE, null);
+                case 402 -> new PaymentResult(PaymentStatus.DECLINED, "банк отклонил оплату");
+                default -> new PaymentResult(PaymentStatus.SERVER_ERROR, "неожиданный код: " + response.getStatusCode());
+            };
+        } catch (org.springframework.web.client.HttpServerErrorException e) {
+            // 500 от Payment
+            return new PaymentResult(PaymentStatus.SERVER_ERROR, e.getMessage());
         } catch (Exception e) {
-            log.warn("reconcile error: order={} ({})", orderId, e.getClass().getSimpleName());
-            return ReconciliationResult.UNKNOWN;
+            // Сетевая ошибка: Payment недоступен
+            return new PaymentResult(PaymentStatus.NETWORK, e.getMessage());
         }
     }
 
-    public enum ChargeResult {
-        CHARGED, DECLINED, SERVER_ERROR, NETWORK
+    private long getAmountForOrder(String orderId) {
+        // TODO: передавать реальную сумму заказа
+        // Сейчас заглушка — нужно передавать amount_cents из заказа
+        return 1000L;
     }
 
-    record ChargeRequest(
-            @JsonProperty("order_id") String orderId,
-            @JsonProperty("amount_cents") BigDecimal amountCents,
-            @JsonProperty("currency") String currency) {}
+    public enum PaymentStatus {
+        CHARGED,    // Оплачено
+        DECLINED,   // Отклонено банком (402)
+        SERVER_ERROR, // Ошибка сервера (500)
+        NETWORK     // Сетевая ошибка
+    }
+
+    public record PaymentResult(PaymentStatus status, String message) {}
 }

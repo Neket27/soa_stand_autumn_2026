@@ -1,45 +1,35 @@
 package orders.api;
 
-import jakarta.servlet.http.HttpServletRequest;
-import lombok.extern.slf4j.Slf4j;
-import orders.api.dto.ApiError;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessException;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-@Slf4j
+import java.util.Map;
+
+/**
+ * Глобальный обработчик исключений.
+ *
+ * === ЧТО СДЕЛАТЬ САМОМУ (S1-S2) ===
+ *
+ * S1: При отклонении банком (402) заказ должен вернуть 201 + rejected.
+ *     — Если здесь выбрасывается исключение → будет 500, и S1 упадёт.
+ *
+ * S2: При 500 от Payment заказ должен вернуть 201 + pending (или paid).
+ *     — Если здесь выбрасывается исключение → будет 500, и S2 упадёт.
+ */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ApiError> handleValidation(MethodArgumentNotValidException ex) {
-        return ResponseEntity.badRequest().body(
-                new ApiError("validation_error", "invalid request body"));
-    }
-
-    @ExceptionHandler(OrderNotFoundException.class)
-    public ResponseEntity<ApiError> handleNotFound(OrderNotFoundException ex) {
-        log.info("order not found: {}", ex.getOrderId());
-        return ResponseEntity.status(404).body(
-                new ApiError("not_found", "order not found"));
-    }
-
-    @ExceptionHandler(DataAccessException.class)
-    public ResponseEntity<ApiError> handleDatabase(DataAccessException ex) {
-        log.warn("database error: {}", ex.getMessage());
-        return ResponseEntity.status(500).body(
-                new ApiError("db_error", "database error"));
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleBadRequest(IllegalArgumentException e) {
+        return ResponseEntity.badRequest()
+                .body(Map.of("error", "bad_request", "message", e.getMessage()));
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ApiError> handleUnhandled(Exception ex, HttpServletRequest request) {
-        log.warn("unhandled exception on {} {}: {}",
-                request.getMethod(), request.getRequestURI(), ex.getMessage(), ex);
-        return ResponseEntity.status(500).body(
-                new ApiError("internal", "internal server error"));
+    public ResponseEntity<Map<String, String>> handleInternal(Exception e) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("error", "internal", "message", e.getMessage()));
     }
 }

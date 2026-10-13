@@ -1,21 +1,19 @@
 package orders.api.dto;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotEmpty;
-
-import java.math.BigDecimal;
 import java.util.List;
 
+/**
+ * Тело запроса на создание заказа.
+ *
+ * Пример JSON:
+ * {
+ *   "user_id": "user-123",
+ *   "items": [
+ *     {"sku": "SKU-001", "qty": 2, "price_cents": 500}
+ *   ]
+ * }
+ */
 public record OrderRequest(
-        @NotBlank @JsonProperty("user_id") String userId,
-        @NotEmpty @JsonProperty("items") List<Item> items) {
-
-    /** Правило суммы заказа: сумма qty * price_cents по всем позициям, в центах. */
-    public BigDecimal amountCents() {
-        return items.stream()
-                .reduce(BigDecimal.ZERO, (sum, i) ->
-                        sum.add(BigDecimal.valueOf(i.qty()).multiply(i.priceCents())),
-                        BigDecimal::add);
-    }
-}
+        String userId,
+        List<Item> items
+) {}

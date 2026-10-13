@@ -1,13 +1,22 @@
+-- Схема базы данных для сервиса заказов.
+--
+-- === ЧТО СДЕЛАТЬ САМОМУ ===
+--
+-- S1: Проверь, что при отклонении банком:
+--     — Заказ переводится в REJECTED
+--     — Резерв товара снимается
+--     — release_pending = FALSE
+--
+-- S2: При 500 от Payment:
+--     — Заказ остаётся PENDING
+--     — Consumer повторяет попытку
+--     — Если retry исчерпан — решение за тобой
 CREATE TABLE IF NOT EXISTS orders (
-    id              TEXT PRIMARY KEY,
-    user_id         TEXT NOT NULL,
-    status          TEXT NOT NULL CHECK (status IN ('PENDING','PAID','REJECTED')),
-    amount_cents    BIGINT NOT NULL,
-    items           JSONB NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    release_pending BOOLEAN NOT NULL DEFAULT FALSE
+    id                TEXT PRIMARY KEY,
+    user_id           TEXT NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'PENDING',
+    amount_cents      BIGINT NOT NULL,
+    items             JSONB NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    release_pending   BOOLEAN DEFAULT FALSE
 );
-
--- Durable-обязанность «снять резерв» для rejected-заказов (фикс утечек L1/L2).
--- Идемпотентно для баз, где таблица уже существует без этой колонки.
-ALTER TABLE orders ADD COLUMN IF NOT EXISTS release_pending BOOLEAN NOT NULL DEFAULT FALSE;

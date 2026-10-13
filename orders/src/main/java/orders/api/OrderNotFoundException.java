@@ -1,16 +1,11 @@
 package orders.api;
 
-import lombok.Getter;
-
-/** Идентификатор заказа, который Orders никогда не принимал (нет строки в хранилище). */
-@Getter
+/**
+ * Исключение, когда заказ не найден.
+ * Выбрасывается в OrderQueryService, когда GET /orders/{id} не находит заказ.
+ */
 public class OrderNotFoundException extends RuntimeException {
-
-    private final String orderId;
-
     public OrderNotFoundException(String orderId) {
-        super("order not found: " + orderId);
-        this.orderId = orderId;
+        super("Заказ не найден: " + orderId);
     }
-
 }

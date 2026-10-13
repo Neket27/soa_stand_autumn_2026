@@ -1,98 +1,90 @@
 package orders.inventory;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import lombok.extern.slf4j.Slf4j;
-import orders.api.dto.Item;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Service;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
+import orders.api.dto.Item;
 
-import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
-@Slf4j
-@Service
+/**
+ * HTTP-клиент для Inventory API.
+ *
+ * === КАК РАБОТАЕТ ===
+ * 1. Резерв: POST {INVENTORY_URL}/reservations
+ *    {
+ *      "order_id": "...",
+ *      "items": [{"sku": "...", "qty": 1}]
+ *    }
+ *
+ * 2. Снятие резерва: DELETE {INVENTORY_URL}/reservations/{orderId}
+ *
+ * === ЧТО СДЕЛАТЬ САМОМУ (S1-S2) ===
+ *
+ * S1: При отклонении банком (402) нужно снять резерв.
+ *     — Проверь, что releaseReservation() вызывается при DECLINED
+ *     — Добавь retry для DELETE /reservations/{id} при ошибке
+ *
+ * S2: Если снятие резерва упадёт — заказ останется REJECTED
+ *     без снятого резерва → S1 упадёт.
+ *     — Нужен механизм повторного снятия (reaper или retry)
+ */
+@Component
 public class InventoryClient {
 
-    private final HttpClient httpClient;
-    private final String baseUrl;
-    private final ObjectMapper objectMapper;
+    private final RestTemplate restTemplate = new RestTemplate();
 
-    public InventoryClient(
-            @Value("${INVENTORY_URL}") String baseUrl,
-            @Value("${INVENTORY.TIMEOUT_MS:200}") int timeoutMs,
-            ObjectMapper objectMapper) {
-        this.baseUrl = baseUrl;
-        this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(timeoutMs))
-                .build();
+    @Value("${INVENTORY_URL}")
+    private String inventoryUrl;
+
+    /**
+     * Резервирует товары для заказа.
+     * Вызывается ДО создания заказа в PENDING.
+     *
+     * Если Inventory вернёт ошибку — заказ не создаётся.
+     * Это правильное поведение: нет резерва → нет заказа.
+     */
+    public void reserve(String orderId, List<Item> items) {
+        List<Map<String, String>> itemsPayload = items.stream()
+                .map(i -> Map.of("sku", i.sku(), "qty", String.valueOf(i.qty())))
+                .toList();
+
+        Map<String, Object> body = Map.of(
+                "order_id", orderId,
+                "items", itemsPayload
+        );
+
+        restTemplate.postForEntity(inventoryUrl + "/reservations", body, Void.class);
     }
 
-    public boolean reserve(String orderId, List<Item> items, Duration timeout) {
-        String body;
-        try {
-            ObjectNode root = objectMapper.createObjectNode();
-            root.put("order_id", orderId);
-            ArrayNode itemsNode = objectMapper.createArrayNode();
-            for (Item i : items) {
-                ObjectNode itemNode = objectMapper.createObjectNode();
-                itemNode.put("sku", i.sku());
-                itemNode.put("qty", i.qty());
-                itemsNode.add(itemNode);
-            }
-            root.set("items", itemsNode);
-            body = objectMapper.writeValueAsString(root);
-        } catch (Exception e) {
-            throw new RuntimeException("failed to serialize reserve request", e);
-        }
+    /**
+     * Снимает резерв товара.
+     * Вызывается при отклонении банком (402).
+     *
+     * === ЧТО СДЕЛАТЬ САМОМУ (S1) ===
+     *
+     * Если DELETE упадёт (500 от Inventory или сетевая ошибка),
+     * резерв останется, и S1 упадёт с ошибкой:
+     * "rejected без снятого резерва"
+     *
+     * Решение:
+     * 1. Добавить retry (3 попытки с backoff)
+     * 2. Или записать в таблицу "release_duty" и повторить позже
+     */
+    public void releaseReservation(String orderId) {
+        // TODO(S1): добавить retry при ошибке
+        // Например:
+        // for (int i = 0; i < 3; i++) {
+        //     try {
+        //         restTemplate.delete(inventoryUrl + "/reservations/" + orderId);
+        //         return;
+        //     } catch (Exception e) {
+        //         Thread.sleep(1000 * (i + 1));
+        //     }
+        // }
+        // throw new RuntimeException("Не удалось снять резерв для " + orderId);
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + "/reservations"))
-                .header("Content-Type", "application/json")
-                .timeout(timeout)
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build();
-
-        try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            int status = response.statusCode();
-            return status == 200 || status == 201;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("Request interrupted");
-            return false;
-        } catch (IOException e) {
-            log.warn("reserve error: order={}", orderId);
-            return false;
-        }
-    }
-
-    public boolean release(String orderId, Duration timeout) {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(baseUrl + "/reservations/" + orderId))
-                .timeout(timeout)
-                .DELETE()
-                .build();
-
-        try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            int status = response.statusCode();
-            return status == 204;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("Request interrupted");
-            return false;
-        } catch (IOException e) {
-            return false;
-        }
+        restTemplate.delete(inventoryUrl + "/reservations/" + orderId);
     }
 }

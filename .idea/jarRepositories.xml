@@ -12,6 +12,11 @@
       <option name="url" value="https://dzo.sw.sbc.space/nexus-ci/repository/maven-ext-cache" />
     </remote-repository>
     <remote-repository>
+      <option name="id" value="central" />
+      <option name="name" value="Central Repository" />
+      <option name="url" value="https://repo.maven.apache.org/maven2" />
+    </remote-repository>
+    <remote-repository>
       <option name="id" value="internal" />
       <option name="name" value="internal" />
       <option name="url" value="https://dzo.sw.sbc.space/nexus-ci/repository/sbt_maven" />

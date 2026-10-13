@@ -1,15 +1,15 @@
-# Этап сборки
+# Многоэтапная сборка Spring Boot приложения.
+
+# Этап 1: сборка с Maven
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /app
 COPY pom.xml .
-RUN mvn dependency:go-offline -B
 COPY src ./src
-RUN mvn package -DskipTests -B
+RUN mvn clean package -DskipTests
 
-# Этап рантайма
-FROM eclipse-temurin:21-jre
+# Этап 2: запуск с JRE
+FROM eclipse-temurin:21-jre-alpine
 WORKDIR /app
-COPY --from=build /app/target/*.jar app.jar
-ENV PORT=8080
+COPY --from=build /app/target/orders-*.jar app.jar
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]

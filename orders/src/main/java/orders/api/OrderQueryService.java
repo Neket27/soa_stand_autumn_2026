@@ -1,25 +1,25 @@
 package orders.api;
 
-import lombok.RequiredArgsConstructor;
-import orders.api.dto.Order;
-import orders.store.OrderRepository;
 import org.springframework.stereotype.Service;
+import orders.store.OrderRepository;
 
 /**
- * Read use case для GET /orders/{id}: владеет поиском, маппингом в API-DTO
- * и решением «заказ не существует».
+ * Сервис для чтения заказов (use case: get order).
  */
 @Service
-@RequiredArgsConstructor
 public class OrderQueryService {
 
     private final OrderRepository orderRepository;
 
-    public Order getOrder(String id) {
-        OrderRepository.StoredOrder order = orderRepository.findById(id);
+    public OrderQueryService(OrderRepository orderRepository) {
+        this.orderRepository = orderRepository;
+    }
+
+    public Order getOrder(String orderId) {
+        Order order = orderRepository.findById(orderId);
         if (order == null) {
-            throw new OrderNotFoundException(id);
+            throw new OrderNotFoundException(orderId);
         }
-        return new Order(order.id(), order.status().name().toLowerCase(), order.amountCents());
+        return order;
     }
 }
