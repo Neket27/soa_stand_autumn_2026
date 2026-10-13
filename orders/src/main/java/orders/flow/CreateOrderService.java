@@ -1,8 +1,11 @@
 package orders.flow;
 
+import orders.payment.PaymentClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import orders.api.dto.Item;
 import orders.api.dto.OrderCreated;
 import orders.api.dto.OrderRequest;
@@ -77,8 +80,17 @@ public class CreateOrderService {
 
         // 6. Оплата
         if ("kafka".equals(dispatchMode)) {
-            // Асинхронная оплата через Kafka
-            kafkaDispatcher.dispatch(orderId, amountCents, "RUB");
+            // Асинхронная оплата через Kafka.
+            // ВАЖНО: событие уходит только ПОСЛЕ коммита транзакции,
+            // иначе Consumer может прочитать событие раньше, чем заказ
+            // появится в БД, и заказ зависнет в PENDING.
+            TransactionSynchronizationManager.registerSynchronization(
+                    new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            kafkaDispatcher.dispatch(orderId);
+                        }
+                    });
             // Возвращаем PENDING — статус изменится позже
             return new OrderCreated(orderId, "pending");
         } else {
@@ -91,11 +103,17 @@ public class CreateOrderService {
                 }
                 case DECLINED -> {
                     orderRepository.transition(orderId, OrderStatus.REJECTED);
-                    inventoryClient.releaseReservation(orderId);
+                    orderRepository.setReleasePending(orderId, true);
+                    try {
+                        inventoryClient.releaseReservation(orderId);
+                        orderRepository.setReleasePending(orderId, false);
+                    } catch (Exception e) {
+                        // Дорезервит Reaper по release_pending
+                    }
                     yield new OrderCreated(orderId, "rejected");
                 }
-                case SERVER_ERROR -> {
-                    // При 500 оставляем PENDING — должен сработать reaper
+                case SERVER_ERROR, NETWORK -> {
+                    // Ошибка/сеть — оставляем PENDING для retry (Reaper)
                     yield new OrderCreated(orderId, "pending");
                 }
             };

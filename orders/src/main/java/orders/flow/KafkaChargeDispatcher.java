@@ -1,10 +1,8 @@
 package orders.flow;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.Acknowledgment;
@@ -17,26 +15,25 @@ import orders.store.OrderRepository;
  * Kafka-диспетчер: читает заказы из топика и вызывает Payment API.
  *
  * === КАК РАБОТАЕТ ===
- * 1. OrderService создаёт заказ в PENDING и отправляет событие в Kafka
+ * 1. CreateOrderService создаёт заказ в PENDING и отправляет событие в Kafka
  * 2. Этот Consumer читает событие и вызывает PaymentClient.charge()
  * 3. При 201 → заказ переходит в PAID
  * 4. При 402 → заказ переходит в REJECTED, снимаем резерв в Inventory
- * 5. При 500 → NAK, событие вернётся в топик (retry)
+ * 5. При 500/сети → исключение, DefaultErrorHandler повторяет чтение
  *
- * === ЧТО СДЕЛАТЬ САМОМУ (S1-S2) ===
+ * === ВАЖНЫЕ ЛОВУШКИ (по ним падал S1) ===
  *
- * S1 (10% отклонений банка):
- * — Здесь уже всё должно работать: 402 → REJECTED + DELETE /reservations/{id}
- * — Но проверь: если снятие резерва упадёт, заказ останется в REJECTED
- *   без снятого резерва → S1 упадёт
- * — Добавь retry для DELETE /reservations/{id} при ошибке
+ * 1. switch ОБЯЗАН покрывать все статусы PaymentStatus. Если ветки нет —
+ *    Java молча выходит из метода: без ack, без смены статуса. Заказ
+ *    навсегда остаётся PENDING, а 402 «исчезает». Так и было: ветки
+ *    NETWORK не было, 402 из RestTemplate приходил как NETWORK.
  *
- * S2 (33% ошибок 500):
- * — Сейчас при 500 мы делаем NAK → событие возвращается в топик
- * — Но NAK без задержки может привести к бесконечному циклу
- * — Нужно добавить backoff (пауза между retry), например 1 сек
- * — Проверь: после успешного retry заказ должен стать PAID
- * — Если retry исчерпан — заказ остаётся PENDING (или REJECTED?)
+ * 2. RestTemplate на 4xx/5xx БРОСКАЕТ исключение — 402 надо ловить
+ *    отдельно в PaymentClient (там оно уже превращается в DECLINED).
+ *
+ * 3. Событие не должно уйти в Kafka до коммита транзакции создания
+ *    заказа, иначе Consumer не найдёт заказ в БД. Диспетчер при
+ *    status == null делает throw → повтор.
  */
 @Component
 public class KafkaChargeDispatcher {
@@ -47,38 +44,28 @@ public class KafkaChargeDispatcher {
     private final InventoryClient inventoryClient;
     private final OrderRepository orderRepository;
     private final KafkaTemplate<String, String> kafkaTemplate;
-    private final ObjectMapper objectMapper;
-
-    @Value("${ORDERS_DISPATCH:memory}")
-    private String dispatchMode;
 
     public KafkaChargeDispatcher(PaymentClient paymentClient,
                                   InventoryClient inventoryClient,
                                   OrderRepository orderRepository,
-                                  KafkaTemplate<String, String> kafkaTemplate,
-                                  ObjectMapper objectMapper) {
+                                  KafkaTemplate<String, String> kafkaTemplate) {
         this.paymentClient = paymentClient;
         this.inventoryClient = inventoryClient;
         this.orderRepository = orderRepository;
         this.kafkaTemplate = kafkaTemplate;
-        this.objectMapper = objectMapper;
     }
 
     /**
      * Публикует событие о заказе в Kafka для асинхронной оплаты.
-     * Вызывается из CreateOrderService, когда ORDERS_DISPATCH=kafka.
+     * Вызывается из CreateOrderService ПОСЛЕ коммита транзакции.
      */
-    public void dispatch(String orderId, long amountCents, String currency) {
-        // Отправляем событие в топик orders-charge
-        // Ключ — orderId для партиционирования (один заказ всегда в одну партицию)
+    public void dispatch(String orderId) {
+        // Ключ — orderId: один заказ всегда попадает в одну партицию
         kafkaTemplate.send("orders-charge", orderId, orderId)
                 .whenComplete((result, ex) -> {
                     if (ex != null) {
                         log.error("Не удалось отправить заказ {} в Kafka", orderId, ex);
-                        // TODO: что делать если Kafka недоступен?
-                        // Вариант 1: перевести заказ в REJECTED
-                        // Вариант 2: retry с backoff
-                        // Вариант 3: записать в outbox таблицу в PostgreSQL
+                        // Заказ остаётся PENDING — его подхватит Reaper
                     }
                 });
     }
@@ -86,25 +73,24 @@ public class KafkaChargeDispatcher {
     /**
      * Consumer: читает события из топика orders-charge.
      *
-     * === ЧТО СДЕЛАТЬ САМОМУ (S1-S2) ===
-     *
-     * S1: Проверь, что при 402 вызывается inventoryClient.releaseReservation()
-     *     Если нет — добавь вызов и retry при ошибке
-     *
-     * S2: Добавь backoff между retry при 500:
-     *     — Используй @KafkaListener + ContainerCustomizer с FixedBackOff
-     *     — Или добавь Thread.sleep() перед NAK (простой вариант)
-     *     — Или используй Dead Letter Topic (DLT) для проблемных событий
+     * === ЧТО СДЕЛАТЬ САМОМУ (S2) ===
+     * Сейчас при 500/сети мы бросаем исключение — DefaultErrorHandler
+     * повторяет чтение события. Добавь backoff, если retry окажется
+     * слишком «горячим» (FixedBackOff в конфигурации container factory).
      */
     @KafkaListener(topics = "orders-charge", groupId = "${KAFKA_GROUP_ID:orders-charge}")
     public void onCharge(ConsumerRecord<String, String> record, Acknowledgment ack) {
         String orderId = record.value();
 
         try {
-            // 1. Проверяем, что заказ ещё PENDING
-            // (мог быть уже обработан другим consumer или retry)
+            // 1. Заказ мог ещё не появиться в БД (гонка с коммитом)
+            //    или быть уже обработан — в обоих случаях retry/пропуск.
             OrderStatus current = orderRepository.getStatus(orderId);
+            if (current == null) {
+                throw new IllegalStateException("заказ ещё не виден в БД: " + orderId);
+            }
             if (current != OrderStatus.PENDING) {
+                // Уже оплачен или отклонён — дубль события, подтверждаем
                 ack.acknowledge();
                 return;
             }
@@ -112,7 +98,7 @@ public class KafkaChargeDispatcher {
             // 2. Вызываем Payment API
             PaymentClient.PaymentResult result = paymentClient.charge(orderId);
 
-            // 3. Обрабатываем результат
+            // 3. Обрабатываем результат — ВСЕ ветки обязательны!
             switch (result.status()) {
                 case CHARGED -> {
                     orderRepository.transition(orderId, OrderStatus.PAID);
@@ -120,24 +106,31 @@ public class KafkaChargeDispatcher {
                     log.info("Заказ {} оплачен", orderId);
                 }
                 case DECLINED -> {
+                    // Банк отклонил: сначала фиксируем REJECTED и метку
+                    // «резерв нужно снять» — если DELETE упадёт, заказ
+                    // не зависнет, а дорезервит Reaper по release_pending.
                     orderRepository.transition(orderId, OrderStatus.REJECTED);
-                    // Снимаем резерв товара
-                    inventoryClient.releaseReservation(orderId);
+                    orderRepository.setReleasePending(orderId, true);
+                    try {
+                        inventoryClient.releaseReservation(orderId);
+                        orderRepository.setReleasePending(orderId, false);
+                        log.info("Заказ {} отклонён банком, резерв снят", orderId);
+                    } catch (Exception e) {
+                        log.warn("Резерв не снят для {}, повторит Reaper", orderId, e);
+                    }
                     ack.acknowledge();
-                    log.info("Заказ {} отклонён банком, резерв снят", orderId);
                 }
-                case SERVER_ERROR -> {
-                    // 500 от Payment — нужно повторить попытку
-                    // TODO(S2): добавь backoff перед NAK
-                    // Например: Thread.sleep(1000) перед ack.nacknowledge()
-                    log.warn("Payment вернул 500 для заказа {}, retry", orderId);
-                    ack.nacknowledge();
+                case SERVER_ERROR, NETWORK -> {
+                    // 500 от Payment или сетевая ошибка → retry события
+                    log.warn("Payment недоступен для заказа {} ({}), retry",
+                            orderId, result.status());
+                    throw new RuntimeException("retry needed: " + result.status());
                 }
             }
         } catch (Exception e) {
+            // Без ack: DefaultErrorHandler вернёт событие в топик
             log.error("Ошибка обработки заказа {}", orderId, e);
-            // Сетевая ошибка или другая проблема — NAK для retry
-            ack.nacknowledge();
+            throw (e instanceof RuntimeException re) ? re : new RuntimeException(e);
         }
     }
 }

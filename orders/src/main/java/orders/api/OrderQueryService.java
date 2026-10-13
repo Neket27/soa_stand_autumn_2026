@@ -1,5 +1,6 @@
 package orders.api;
 
+import orders.api.dto.Order;
 import org.springframework.stereotype.Service;
 import orders.store.OrderRepository;
 

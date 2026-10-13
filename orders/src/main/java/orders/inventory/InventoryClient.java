@@ -46,8 +46,13 @@ public class InventoryClient {
      * Это правильное поведение: нет резерва → нет заказа.
      */
     public void reserve(String orderId, List<Item> items) {
-        List<Map<String, String>> itemsPayload = items.stream()
-                .map(i -> Map.of("sku", i.sku(), "qty", String.valueOf(i.qty())))
+        List<Map<String, Object>> itemsPayload = items.stream()
+                .map(i -> {
+                    Map<String, Object> m = new java.util.HashMap<>();
+                    m.put("sku", i.sku());
+                    m.put("qty", i.qty());
+                    return m;
+                })
                 .toList();
 
         Map<String, Object> body = Map.of(

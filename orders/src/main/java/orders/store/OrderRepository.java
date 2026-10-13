@@ -68,17 +68,36 @@ public class OrderRepository {
         return updated > 0;
     }
 
+    /**
+     * GET /orders/{id} отдаёт статус строго lowercase: "paid", "rejected",
+     * "pending" — раннер сравнивает их с этим набором, uppercase "PAID"
+     * он считает нарушением контракта.
+     */
     public Order findById(String orderId) {
         String sql = "SELECT id, status, amount_cents FROM orders WHERE id = ?";
         List<Order> results = jdbc.query(sql,
                 (rs, rowNum) -> new Order(
                         rs.getString("id"),
-                        rs.getString("status"),
+                        rs.getString("status").toLowerCase(),
                         rs.getLong("amount_cents")
                 ),
                 orderId
         );
         return results.isEmpty() ? null : results.get(0);
+    }
+
+    /**
+     * Сумма заказа в копейках (amount_cents = Σ qty × price_cents).
+     * PaymentClient передаёт её в Payment: заглушка "1000" не проходит
+     * проверку «списана сумма заказа».
+     */
+    public long getAmount(String orderId) {
+        String sql = "SELECT amount_cents FROM orders WHERE id = ?";
+        List<Long> results = jdbc.queryForList(sql, Long.class, orderId);
+        if (results.isEmpty()) {
+            throw new IllegalStateException("заказ не найден: " + orderId);
+        }
+        return results.get(0);
     }
 
     public OrderStatus getStatus(String orderId) {
