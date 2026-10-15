@@ -51,6 +51,24 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
+        <!-- Bean Validation — валидация DTO через аннотации
+             (@NotBlank, @NotEmpty, @Min, @Valid) на уровне полей -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Lombok — генерация геттеров/сеттеров/конструкторов на этапе компиляции.
+             Пока в коде не используется (записи и явные конструкторы),
+             добавлен для будущего удобства.
+             В IDEA: включить annotation processing (Settings → Compiler →
+             Annotation Processors → Enable) или установить Lombok-плагин. -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- Тесты -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

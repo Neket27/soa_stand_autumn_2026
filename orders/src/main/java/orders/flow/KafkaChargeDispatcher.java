@@ -1,10 +1,11 @@
 package orders.flow;
 
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 import orders.inventory.InventoryClient;
@@ -12,10 +13,14 @@ import orders.payment.PaymentClient;
 import orders.store.OrderRepository;
 
 /**
- * Kafka-диспетчер: читает заказы из топика и вызывает Payment API.
+ * Kafka-Consumer заказов: читает события из топика orders-charge
+ * и вызывает Payment API.
+ *
+ * События в топик кладёт OutboxDispatcher (Transactional Outbox),
+ * а не HTTP-поток — см. CreateOrderService.
  *
  * === КАК РАБОТАЕТ ===
- * 1. CreateOrderService создаёт заказ в PENDING и отправляет событие в Kafka
+ * 1. OutboxDispatcher отправил событие "заказ X нужно оплатить"
  * 2. Этот Consumer читает событие и вызывает PaymentClient.charge()
  * 3. При 201 → заказ переходит в PAID
  * 4. При 402 → заказ переходит в REJECTED, снимаем резерв в Inventory
@@ -31,44 +36,18 @@ import orders.store.OrderRepository;
  * 2. RestTemplate на 4xx/5xx БРОСКАЕТ исключение — 402 надо ловить
  *    отдельно в PaymentClient (там оно уже превращается в DECLINED).
  *
- * 3. Событие не должно уйти в Kafka до коммита транзакции создания
- *    заказа, иначе Consumer не найдёт заказ в БД. Диспетчер при
- *    status == null делает throw → повтор.
+ * 3. Проверка статуса заказа перед оплатой делает Consumer
+ *    идемпотентным: дубли события (outbox at-least-once, повторные
+ *    чтения) не приводят к повторному списанию.
  */
+@Slf4j
 @Component
+@RequiredArgsConstructor
 public class KafkaChargeDispatcher {
-
-    private static final Logger log = LoggerFactory.getLogger(KafkaChargeDispatcher.class);
 
     private final PaymentClient paymentClient;
     private final InventoryClient inventoryClient;
     private final OrderRepository orderRepository;
-    private final KafkaTemplate<String, String> kafkaTemplate;
-
-    public KafkaChargeDispatcher(PaymentClient paymentClient,
-                                  InventoryClient inventoryClient,
-                                  OrderRepository orderRepository,
-                                  KafkaTemplate<String, String> kafkaTemplate) {
-        this.paymentClient = paymentClient;
-        this.inventoryClient = inventoryClient;
-        this.orderRepository = orderRepository;
-        this.kafkaTemplate = kafkaTemplate;
-    }
-
-    /**
-     * Публикует событие о заказе в Kafka для асинхронной оплаты.
-     * Вызывается из CreateOrderService ПОСЛЕ коммита транзакции.
-     */
-    public void dispatch(String orderId) {
-        // Ключ — orderId: один заказ всегда попадает в одну партицию
-        kafkaTemplate.send("orders-charge", orderId, orderId)
-                .whenComplete((result, ex) -> {
-                    if (ex != null) {
-                        log.error("Не удалось отправить заказ {} в Kafka", orderId, ex);
-                        // Заказ остаётся PENDING — его подхватит Reaper
-                    }
-                });
-    }
 
     /**
      * Consumer: читает события из топика orders-charge.
@@ -86,9 +65,9 @@ public class KafkaChargeDispatcher {
             // 1. Заказ мог ещё не появиться в БД (гонка с коммитом)
             //    или быть уже обработан — в обоих случаях retry/пропуск.
             OrderStatus current = orderRepository.getStatus(orderId);
-            if (current == null) {
+            if (current == null)
                 throw new IllegalStateException("заказ ещё не виден в БД: " + orderId);
-            }
+
             if (current != OrderStatus.PENDING) {
                 // Уже оплачен или отклонён — дубль события, подтверждаем
                 ack.acknowledge();

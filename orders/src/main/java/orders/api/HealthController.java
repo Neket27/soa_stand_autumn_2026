@@ -1,5 +1,6 @@
 package orders.api;
 
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -9,19 +10,15 @@ import orders.store.OrderRepository;
 import java.util.Map;
 
 /**
- * Health-check эндпоинт на корневом уровне.
+ * Health-check эндпоинт.
  *
- * Runner проверяет GET /healthz (без префикса /orders),
- * поэтому эндпоинт вынесен в отдельный контроллер.
- */
+ * Runner проверяет GET /healthz,.
+ **/
 @RestController
+@RequiredArgsConstructor
 public class HealthController {
 
     private final OrderRepository orderRepository;
-
-    public HealthController(OrderRepository orderRepository) {
-        this.orderRepository = orderRepository;
-    }
 
     @GetMapping("/healthz")
     public ResponseEntity<Map<String, String>> health() {

@@ -12,11 +12,9 @@ import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
  *
  * JSON использует snake_case (user_id, amount_cents, price_cents),
  * а Java-классы — camelCase (userId, amountCents, priceCents).
- * Без этой конфигурации Spring Boot не сможет десериализовать запросы.
  */
 @Configuration
 public class JacksonConfig {
-
     @Bean
     public ObjectMapper objectMapper(Jackson2ObjectMapperBuilder builder) {
         ObjectMapper mapper = builder.build();

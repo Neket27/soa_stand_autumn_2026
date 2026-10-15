@@ -1,5 +1,6 @@
 package orders.store;
 
+import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import orders.api.dto.Item;
@@ -36,13 +37,10 @@ import java.util.List;
  *     — Если retry исчерпан — перевести в REJECTED? Или оставить PENDING?
  */
 @Repository
+@RequiredArgsConstructor
 public class OrderRepository {
 
     private final JdbcTemplate jdbc;
-
-    public OrderRepository(JdbcTemplate jdbc) {
-        this.jdbc = jdbc;
-    }
 
     public void insertPending(String orderId, String userId, long amountCents, List<Item> items) {
         String sql = """

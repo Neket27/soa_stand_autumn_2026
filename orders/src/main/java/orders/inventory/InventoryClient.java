@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 import orders.api.dto.Item;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -48,7 +49,7 @@ public class InventoryClient {
     public void reserve(String orderId, List<Item> items) {
         List<Map<String, Object>> itemsPayload = items.stream()
                 .map(i -> {
-                    Map<String, Object> m = new java.util.HashMap<>();
+                    Map<String, Object> m = new HashMap<>();
                     m.put("sku", i.sku());
                     m.put("qty", i.qty());
                     return m;
