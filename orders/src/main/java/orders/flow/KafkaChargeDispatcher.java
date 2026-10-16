@@ -6,6 +6,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 import orders.inventory.InventoryClient;
@@ -52,21 +53,31 @@ public class KafkaChargeDispatcher {
     /**
      * Consumer: читает события из топика orders-charge.
      *
-     * === ЧТО СДЕЛАТЬ САМОМУ (S2) ===
-     * Сейчас при 500/сети мы бросаем исключение — DefaultErrorHandler
-     * повторяет чтение события. Добавь backoff, если retry окажется
-     * слишком «горячим» (FixedBackOff в конфигурации container factory).
+     * Ретраи настроены в KafkaConfig.kafkaListenerContainerFactory:
+     * FixedBackOff(5 с, 9 повторов) — при 500/сети исключение из веток
+     * SERVER_ERROR/NETWORK возвращает событие в топик, но с паузой, а
+     * не «вслепую» сразу. После исчерпания попыток событие пропускается,
+     * заказ остаётся PENDING — его повторит Reaper.
      */
     @KafkaListener(topics = "orders-charge", groupId = "${KAFKA_GROUP_ID:orders-charge}")
     public void onCharge(ConsumerRecord<String, String> record, Acknowledgment ack) {
         String orderId = record.value();
 
         try {
-            // 1. Заказ мог ещё не появиться в БД (гонка с коммитом)
-            //    или быть уже обработан — в обоих случаях retry/пропуск.
+            // 1. С transactional outbox гонки «событие раньше коммита
+            //    заказа» быть не может: событие лежит в той же транзакции,
+            //    что и заказ, и публикуется только после коммита. Поэтому
+            //    null означает чужое/устаревшее событие (например, из
+            //    прошлого запуска стенда: Kafka-топик живёт дольше БД).
+            //    Ретрай бессмыслен — заказ никогда не появится, а каждая
+            //    попытка стоит FixedBackOff (5 с). Подтверждаем и идём дальше.
             OrderStatus current = orderRepository.getStatus(orderId);
-            if (current == null)
-                throw new IllegalStateException("заказ ещё не виден в БД: " + orderId);
+            if (current == null) {
+                log.warn("Событие для неизвестного заказа {} (offset {}), пропускаю",
+                        orderId, record.offset());
+                ack.acknowledge();
+                return;
+            }
 
             if (current != OrderStatus.PENDING) {
                 // Уже оплачен или отклонён — дубль события, подтверждаем
@@ -80,20 +91,28 @@ public class KafkaChargeDispatcher {
             // 3. Обрабатываем результат — ВСЕ ветки обязательны!
             switch (result.status()) {
                 case CHARGED -> {
-                    orderRepository.transition(orderId, OrderStatus.PAID);
+                    // false → Reaper успел перевести заказ первым; в лог
+                    // пишем факт, а не «оплачен».
+                    if (orderRepository.transition(orderId, OrderStatus.PAID)) {
+                        log.info("Заказ {} оплачен", orderId);
+                    } else {
+                        log.info("Заказ {} уже переведён Reaper'ом", orderId);
+                    }
                     ack.acknowledge();
-                    log.info("Заказ {} оплачен", orderId);
                 }
                 case DECLINED -> {
                     // Банк отклонил: сначала фиксируем REJECTED и метку
                     // «резерв нужно снять» — если DELETE упадёт, заказ
                     // не зависнет, а дорезервит Reaper по release_pending.
-                    orderRepository.transition(orderId, OrderStatus.REJECTED);
+                    boolean first = orderRepository.transition(orderId, OrderStatus.REJECTED);
                     orderRepository.setReleasePending(orderId, true);
                     try {
                         inventoryClient.releaseReservation(orderId);
                         orderRepository.setReleasePending(orderId, false);
-                        log.info("Заказ {} отклонён банком, резерв снят", orderId);
+                        log.info(first
+                                ? "Заказ {} отклонён банком, резерв снят"
+                                : "Заказ {} отклонён Reaper'ом ранее, резерв снят",
+                                orderId);
                     } catch (Exception e) {
                         log.warn("Резерв не снят для {}, повторит Reaper", orderId, e);
                     }

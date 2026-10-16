@@ -1,13 +1,18 @@
 package orders.inventory;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import orders.api.dto.InventoryReserveItemsDto;
+import orders.api.dto.ItemPayloadInventory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 import orders.api.dto.Item;
 
-import java.util.HashMap;
+import java.time.Duration;
 import java.util.List;
-import java.util.Map;
 
 /**
  * HTTP-клиент для Inventory API.
@@ -21,23 +26,39 @@ import java.util.Map;
  *
  * 2. Снятие резерва: DELETE {INVENTORY_URL}/reservations/{orderId}
  *
- * === ЧТО СДЕЛАТЬ САМОМУ (S1-S2) ===
+ * === НАДЁЖНОСТЬ СНЯТИЯ РЕЗЕРВА ===
  *
- * S1: При отклонении банком (402) нужно снять резерв.
- *     — Проверь, что releaseReservation() вызывается при DECLINED
- *     — Добавь retry для DELETE /reservations/{id} при ошибке
- *
- * S2: Если снятие резерва упадёт — заказ останется REJECTED
- *     без снятого резерва → S1 упадёт.
- *     — Нужен механизм повторного снятия (reaper или retry)
+ * Если DELETE упадёт (500 от Inventory или сетевая ошибка), исключение
+ * уходит в Consumer: он ставит release_pending = TRUE и повторяет снятие
+ * на каждом тике Reaper, пока не получит успех. Заказ не «застревает»
+ * с действующим резервом.
  */
 @Component
 public class InventoryClient {
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;
 
     @Value("${INVENTORY_URL}")
     private String inventoryUrl;
+
+    // Таймауты обязательны: reserve() вызывается В HTTP-ПУТИ POST /orders,
+    // и зависший Inventory без них подвесил бы весь запрос (бюджет 1 с на
+    // POST, S3/S4). При сбое получаем исключение → заказ не создаётся.
+    public InventoryClient(ObjectMapper objectMapper) {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(Duration.ofSeconds(5));
+        factory.setReadTimeout(Duration.ofSeconds(10));
+        RestTemplate restTemplate = new RestTemplate(factory);
+        // Подставляем контекстный ObjectMapper: только он знает snake_case-
+        // стратегию (JacksonConfig). Без неё DTO ушёл бы в JSON как
+        // {"orderId":...}, а Inventory ждёт {"order_id":...}.
+        for (HttpMessageConverter<?> converter : restTemplate.getMessageConverters()) {
+            if (converter instanceof MappingJackson2HttpMessageConverter jackson) {
+                jackson.setObjectMapper(objectMapper);
+            }
+        }
+        this.restTemplate = restTemplate;
+    }
 
     /**
      * Резервирует товары для заказа.
@@ -47,50 +68,24 @@ public class InventoryClient {
      * Это правильное поведение: нет резерва → нет заказа.
      */
     public void reserve(String orderId, List<Item> items) {
-        List<Map<String, Object>> itemsPayload = items.stream()
-                .map(i -> {
-                    Map<String, Object> m = new HashMap<>();
-                    m.put("sku", i.sku());
-                    m.put("qty", i.qty());
-                    return m;
-                })
+        List<ItemPayloadInventory> itemsPayload = items.stream()
+                .map(i -> new ItemPayloadInventory(i.sku(), i.qty()))
                 .toList();
 
-        Map<String, Object> body = Map.of(
-                "order_id", orderId,
-                "items", itemsPayload
-        );
+        InventoryReserveItemsDto itemsDto = new InventoryReserveItemsDto(orderId, itemsPayload);
 
-        restTemplate.postForEntity(inventoryUrl + "/reservations", body, Void.class);
+        restTemplate.postForEntity(inventoryUrl + "/reservations", itemsDto, Void.class);
     }
 
     /**
      * Снимает резерв товара.
      * Вызывается при отклонении банком (402).
      *
-     * === ЧТО СДЕЛАТЬ САМОМУ (S1) ===
-     *
-     * Если DELETE упадёт (500 от Inventory или сетевая ошибка),
-     * резерв останется, и S1 упадёт с ошибкой:
-     * "rejected без снятого резерва"
-     *
-     * Решение:
-     * 1. Добавить retry (3 попытки с backoff)
-     * 2. Или записать в таблицу "release_duty" и повторить позже
+     * При ошибке исключение НЕ глотаем: его получает Consumer, который
+     * помечает заказ release_pending = TRUE, и снятие повторяет Reaper
+     * (см. javadoc класса).
      */
     public void releaseReservation(String orderId) {
-        // TODO(S1): добавить retry при ошибке
-        // Например:
-        // for (int i = 0; i < 3; i++) {
-        //     try {
-        //         restTemplate.delete(inventoryUrl + "/reservations/" + orderId);
-        //         return;
-        //     } catch (Exception e) {
-        //         Thread.sleep(1000 * (i + 1));
-        //     }
-        // }
-        // throw new RuntimeException("Не удалось снять резерв для " + orderId);
-
         restTemplate.delete(inventoryUrl + "/reservations/" + orderId);
     }
 }

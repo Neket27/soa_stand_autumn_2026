@@ -12,11 +12,14 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.EnableKafka;
 import org.springframework.kafka.core.*;
+import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.KafkaMessageListenerContainer;
 import org.springframework.kafka.listener.MessageListener;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 import org.springframework.kafka.support.serializer.JsonSerializer;
+import org.springframework.util.backoff.FixedBackOff;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -41,15 +44,10 @@ import java.util.Map;
  * — Масштабирование: можно запустить несколько consumer-реплик
  * — Развязка: Orders не знает о Payment, только пишет в топик
  *
- * === ЧТО СДЕЛАТЬ САМОМУ (S1-S2) ===
- * S1: Payment отклоняет 10% платежей (402). Нужно убедиться, что:
- *     — Consumer корректно обработал 402 → REJECTED
- *     — DELETE /reservations/{orderId} вызван для снятия резерва
- *
- * S2: Payment возвращает 500 на 33% запросов. Нужно убедиться, что:
- *     — Consumer retry-ит запрос при 500
- *     — После успешного retry заказ переходит в PAID
- *     — Минимум 90% заказов (не отклонённых банком) становятся PAID
+ * === КОНТРАКТ С ЗАГЛУШКАМИ (что проверяет раннер) ===
+ * S1: Payment отклоняет 10% платежей (402) → заказ REJECTED, резерв снят
+ * S2: Payment возвращает 500 на 33% запросов → событие ретраится,
+ *     после успешного повтора заказ переходит в PAID
  */
 @Configuration
 @EnableKafka
@@ -126,6 +124,17 @@ public class KafkaConfig {
         // явно ставим request.timeout.ms = 5000.
         props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 5_000);
         props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 10_000);
+
+        // max.block.ms — вторая, «верхняя» граница send(). Ограничивает
+        // период ДО создания future: ожидание метаданных (брокеры лежат,
+        // bootstrap недоступен) и ожидание освобождения буфера
+        // (buffer.memory). delivery.timeout.ms сюда НЕ входит — будущего
+        // (future) в этот момент ещё не существует.
+        //
+        // Дефолт 60 с: при упавшей Kafka каждый тик OutboxDispatcher
+        // висел бы минуту на первом же send(). Ставим 5 с — поллер
+        // быстро откатывается к следующему тику, outbox копит события.
+        props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 5_000);
         return new DefaultKafkaProducerFactory<>(props);
     }
 
@@ -151,5 +160,31 @@ public class KafkaConfig {
         // Коммитим offset вручную (AckMode.MANUAL)
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         return new DefaultKafkaConsumerFactory<>(props);
+    }
+
+    /**
+     * Фабрика слушателей для @KafkaListener (имя бина — стандартное,
+     * Spring Kafka ищет именно kafkaListenerContainerFactory).
+     *
+     * Здесь же настроен ретрай неудачных событий. Если бы мы оставили
+     * дефолт, DefaultErrorHandler повторял бы чтение СРАЗУ и БЕСКОНЕЧНО
+     * (FixedBackOff(0, 9)): при недоступном Payment коньюмер долбил бы
+     * его без пауз, сжигая бюджет запросов (S4: не больше 30 запросов
+     * за время отказа).
+     *
+     * FixedBackOff(5 с, 9 повторов): попытка занимает до 10 с (read
+     * timeout PaymentClient) + 5 с пауза — один застрявший заказ даёт
+     * ~1 запрос к Payment в 15 с. Если все 10 попыток исчерпаны,
+     * событие пропускается (offset коммитится), заказ остаётся PENDING
+     * — его подберёт Reaper (порог 30 с), так что потеря невозможна.
+     */
+    @Bean
+    public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory() {
+        ConcurrentKafkaListenerContainerFactory<String, String> factory =
+                new ConcurrentKafkaListenerContainerFactory<>();
+        factory.setConsumerFactory(consumerFactory());
+        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);
+        factory.setCommonErrorHandler(new DefaultErrorHandler(new FixedBackOff(5_000L, 9L)));
+        return factory;
     }
 }

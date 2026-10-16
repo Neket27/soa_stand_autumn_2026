@@ -7,6 +7,7 @@ import orders.api.dto.Item;
 import orders.api.dto.Order;
 import orders.flow.OrderStatus;
 
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -23,18 +24,15 @@ import java.util.List;
  *     release_pending BOOLEAN DEFAULT FALSE  -- нужно ли снять резерв
  * );
  *
- * === ЧТО СДЕЛАТЬ САМОМУ (S1-S2) ===
+ * === СВЯЗЬ С БИЗНЕС-ПРОЦЕССОМ ===
  *
- * S1: При отклонении банком:
- *     — Перевести заказ в REJECTED
- *     — Установить release_pending = TRUE
- *     — Снять резерв через Inventory API
- *     — Если снятие удалось — release_pending = FALSE
+ * Отклонение банком (402): переход в REJECTED + release_pending = TRUE
+ * (KafkaChargeDispatcher или Reaper) → снятие резерва через Inventory,
+ * при успехе release_pending = FALSE. Если снятие упало — заказ REJECTED
+ * не «зависает» с резервом: снятие повторяет Reaper по release_pending.
  *
- * S2: При 500 от Payment:
- *     — Оставить заказ в PENDING
- *     — Consumer должен повторить попытку
- *     — Если retry исчерпан — перевести в REJECTED? Или оставить PENDING?
+ * Ошибка Payment (500/сеть): заказ остаётся PENDING, событие оплаты
+ * ретраит Consumer; PENDING старше 30 с подбирает Reaper.
  */
 @Repository
 @RequiredArgsConstructor
@@ -53,12 +51,12 @@ public class OrderRepository {
 
     /**
      * Атомарный переход заказа в новый статус.
-     * Используется для предотвращения двойной оплаты.
      *
-     * === ЧТО СДЕЛАТЬ САМОМУ ===
-     *
-     * Условие WHERE status = 'PENDING' гарантирует, что заказ
-     * не будет переведён дважды (например, двумя consumer-репликами).
+     * Условие WHERE status = 'PENDING' гарантирует, что заказ переведёт
+     * ровно кто-то один из конкурирующих «платильщиков» (Consumer и Reaper
+     * работают параллельно и оба могут звонить в Payment). Возвращает
+     * false, если статус уже кто-то сменил, — вызывающий код не должен
+     * в этом случае доложить об успехе в лог.
      */
     public boolean transition(String orderId, OrderStatus newStatus) {
         String sql = "UPDATE orders SET status = ? WHERE id = ? AND status = 'PENDING'";
@@ -105,12 +103,19 @@ public class OrderRepository {
     }
 
     /**
-     * Получить список PENDING заказов для reaper.
-     * Reaper периодически проверяет PENDING заказы и повторяет попытку.
+     * PENDING заказы, которые «зависли»: created_at старше olderThan.
+     *
+     * Возраст нужен, чтобы не хвататься за свежие заказы: Consumer ещё
+     * обрабатывает их (событие в Kafka, вызов Payment в полёте) —
+     * повторный звонок в Payment для них это лишние запросы и гонка.
      */
-    public List<String> findPendingIds() {
-        String sql = "SELECT id FROM orders WHERE status = 'PENDING'";
-        return jdbc.queryForList(sql, String.class);
+    public List<String> findPendingIdsOlderThan(Duration olderThan) {
+        String sql = """
+            SELECT id FROM orders
+            WHERE status = 'PENDING'
+              AND created_at < now() - make_interval(secs => ?)
+            """;
+        return jdbc.queryForList(sql, String.class, olderThan.toMillis() / 1000.0);
     }
 
     /**

@@ -22,16 +22,13 @@ import orders.service.OrderQueryService;
  * POST /orders    — создать заказ (CreateOrderService)
  * GET  /orders/{id} — получить заказ (OrderQueryService)
  *
- * === ЧТО СДЕЛАТЬ САМОМУ (S1-S2) ===
- *
- * S1: POST /orders должен вернуть:
- *     — 201 + {"id": "...", "status": "paid"} если оплачен
- *     — 201 + {"id": "...", "status": "rejected"} если отклонён банком
- *
- * S2: POST /orders при 500 от Payment:
- *     — Должен вернуть 201 + {"id": "...", "status": "pending"}
- *     — Или 201 + {"id": "...", "status": "paid"} если retry прошёл быстро
- *     — Главное: НЕ 500!
+ * === КОНТРАКТ ОТВЕТА ===
+ * POST /orders всегда отвечает 201 + {"id": ..., "status": "pending"}:
+ * оплата асинхронна (см. CreateOrderService), итоговый статус — через
+ * GET /orders/{id}. Ответ принципиально не ждёт Payment, поэтому бюджет
+ * 1 с на POST держится и при задержке ответа Payment (S3, 2 с), и при
+ * его падении (S4). 5xx с этого эндпоинта — только при реальных сбоях
+ * самого Orders (Inventory, БД).
  */
 @RestController
 @RequestMapping("/orders")

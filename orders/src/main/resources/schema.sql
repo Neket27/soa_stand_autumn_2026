@@ -1,16 +1,9 @@
 -- Схема базы данных для сервиса заказов.
 --
--- === ЧТО СДЕЛАТЬ САМОМУ ===
---
--- S1: Проверь, что при отклонении банком:
---     — Заказ переводится в REJECTED
---     — Резерв товара снимается
---     — release_pending = FALSE
---
--- S2: При 500 от Payment:
---     — Заказ остаётся PENDING
---     — Consumer повторяет попытку
---     — Если retry исчерпан — решение за тобой
+-- Отклонение банком: заказ REJECTED + release_pending = TRUE → снятие
+-- резерва (Consumer или Reaper), после успеха release_pending = FALSE.
+-- Ошибка Payment: заказ PENDING, событие ретраит Consumer; PENDING
+-- старше 30 с повторяет Reaper.
 CREATE TABLE IF NOT EXISTS orders (
     id                TEXT PRIMARY KEY,
     user_id           TEXT NOT NULL,
@@ -37,3 +30,18 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     sent_at     TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_unsent ON outbox_events (id) WHERE sent_at IS NULL;
+
+-- Журнал компенсаций (двойник release_pending для случая, когда заказа
+-- НЕТ вообще): резерв в Inventory создан ДО транзакции Orders, и если
+-- создание заказа откатилось — резерв превратился бы в вечную утечку
+-- (у заглушки нет TTL, Reaper ходит только по таблице orders).
+--
+-- CreateOrderService пишет сюда строку в ОТДЕЛЬНОЙ транзакции
+-- (REQUIRES_NEW — иначе запись уедет вместе с откатом), а Reaper
+-- повторяет DELETE /reservations/{order_id} до успеха. DELETE
+-- идемпотентен, поэтому at-least-once повторы безопасны.
+CREATE TABLE IF NOT EXISTS release_duties (
+    order_id   TEXT PRIMARY KEY,
+    attempts   INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
