@@ -74,6 +74,8 @@ services:
       retries: 40
 
   orders:
+    deploy:
+      replicas: 5
     # ORDERS_DIR — только для локальных экспериментов (например,
     # ORDERS_DIR=./examples/go); проверка всегда собирает ./orders.
     build: ${ORDERS_DIR:-./orders}
@@ -84,8 +86,12 @@ services:
       INVENTORY_URL: http://mocks:8080
       KAFKA_BOOTSTRAP_SERVERS: kafka:9094
       KAFKA_GROUP_ID: orders-charge
-    ports:
-      - "127.0.0.1:${ORDERS_PORT:-8080}:8080"
+    # ЛОКАЛЬНЫЙ ЭКСПЕРИМЕНТ: порт закомментирован, чтобы --scale работал
+    # (несколько контейнеров не могут делить 127.0.0.1:8080).
+    # Внутренним сервисам это не мешает: они ходят на http://orders:8080,
+    # Docker DNS отдаёт все IP реплик.
+    # ports:
+    #   - "127.0.0.1:${ORDERS_PORT:-8080}:8080"
     # Сырые сокеты сервису не нужны, повышать привилегии — тоже.
     cap_drop: [NET_RAW]
     security_opt: ["no-new-privileges:true"]

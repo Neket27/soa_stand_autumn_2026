@@ -59,7 +59,7 @@ public class KafkaChargeDispatcher {
      * не «вслепую» сразу. После исчерпания попыток событие пропускается,
      * заказ остаётся PENDING — его повторит Reaper.
      */
-    @KafkaListener(topics = "orders-charge", groupId = "${KAFKA_GROUP_ID:orders-charge}")
+    @KafkaListener(topics = "orders-charge", groupId = "${KAFKA_GROUP_ID:orders-charge}", concurrency = "${KAFKA_CONCURRENCY:12}")
     public void onCharge(ConsumerRecord<String, String> record, Acknowledgment ack) {
         String orderId = record.value();
 

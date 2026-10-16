@@ -74,7 +74,7 @@ public class KafkaConfig {
     @Bean
     public NewTopic ordersChargeTopic() {
         // 3 партиции — можно масштабировать consumer-реплики
-        return new NewTopic("orders-charge", 3, (short) 1);
+        return new NewTopic("orders-charge", 12, (short) 1);
     }
 
     /**
@@ -172,11 +172,26 @@ public class KafkaConfig {
      * его без пауз, сжигая бюджет запросов (S4: не больше 30 запросов
      * за время отказа).
      *
-     * FixedBackOff(5 с, 9 повторов): попытка занимает до 10 с (read
-     * timeout PaymentClient) + 5 с пауза — один застрявший заказ даёт
-     * ~1 запрос к Payment в 15 с. Если все 10 попыток исчерпаны,
-     * событие пропускается (offset коммитится), заказ остаётся PENDING
-     * — его подберёт Reaper (порог 30 с), так что потеря невозможна.
+     * FixedBackOff(1 с, 35 повторов): упавшая запись в seek-to-current
+     * возвращается ПЕРВОЙ в свою партицию и блокирует очередь за собой,
+     * поэтому цена паузы критична: с 5 с один заказ с цепочкой 500-х
+     * держал свою партицию ~30 с и события за ним не доходили до
+     * Payment за окно сценария (S2: 2 заказа с нулём запросов). С 1 с
+     * цена попытки минимальна.
+     *
+     * Число попыток (35 ≈ 35 с) согласовано с паузой Circuit Breaker
+     * (PAYMENT_BREAKER_WAIT_S=25): пока цепь в OPEN, попытка — быстрый
+     * отказ без сети, так что длинное окно ретраев бесплатно по бюджету
+     * запросов. Зато оно перекрывает время до пробного запроса HALF_OPEN
+     * после подъёма Payment: заказ после чёрной дыры оплачивается
+     * коньюмером, а не ждёт Reaper'а (порог 30 с) и не срывается к
+     * концу сценария. Если попытки всё же исчерпаны, событие
+     * пропускается (offset коммитится), заказ остаётся PENDING — его
+     * подберёт Reaper, так что потеря невозможна.
+     *
+     * Дальнейший уровень (если нужен рост) — неблокирующие ретраи через
+     * retry topic: падающая запись уходит в отдельный топик и вообще не
+     * задерживает основную очередь.
      */
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, String> kafkaListenerContainerFactory() {
@@ -184,7 +199,7 @@ public class KafkaConfig {
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory());
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL);
-        factory.setCommonErrorHandler(new DefaultErrorHandler(new FixedBackOff(5_000L, 9L)));
+        factory.setCommonErrorHandler(new DefaultErrorHandler(new FixedBackOff(1_000L, 35L)));
         return factory;
     }
 }

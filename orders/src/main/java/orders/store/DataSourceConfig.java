@@ -22,7 +22,8 @@ public class DataSourceConfig {
     public DataSource dataSource(
             @Value("${DATABASE_URL}") String databaseUrl,
             @Value("${DB_USER:}") String username,
-            @Value("${DB_PASSWORD:}") String password) {
+            @Value("${DB_PASSWORD:}") String password,
+            @Value("${DB_POOL_SIZE:16}") int poolSize) {
 
         // Извлекаем учётные данные из URL, если они там есть
         String urlWithoutCredentials = databaseUrl;
@@ -56,7 +57,16 @@ public class DataSourceConfig {
         dataSource.setUsername(username);
         dataSource.setPassword(password);
         dataSource.setDriverClassName("org.postgresql.Driver");
-        dataSource.setMaximumPoolSize(10);
+        // Размер пула под конфигурацию «12 партиций, concurrency 12»:
+        // 12 потоков коньюмера + ~4 (API-запросы, outbox-поллер, Reaper).
+        // Соединение держится только на время запроса — HTTP-вызов Payment
+        // пул не занимает, поэтому 16 покрывает пик без ожидания.
+        //
+        // Потолок сверху — max_connections=100 у Postgres (дефолт) на ВСЕ
+        // реплики orders: 5 × 16 = 80, запас ~20 на healthcheck'и и раннер.
+        // Больше 20 на инстанс при 5 репликах ставить нельзя — упрутся в
+        // «too many connections». Меняется через DB_POOL_SIZE без правки кода.
+        dataSource.setMaximumPoolSize(poolSize);
         return dataSource;
     }
 

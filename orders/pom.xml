@@ -45,6 +45,17 @@
             <artifactId>spring-kafka</artifactId>
         </dependency>
 
+        <!-- Resilience4j — Circuit Breaker для вызовов Payment.
+             Паттерн «предохранитель»: при молчании Payment (таймауты)
+             цепь переходит в OPEN и вызовы НЕ отправляются в сеть,
+             вместо них быстрый отказ. Через waitDuration — HALF_OPEN:
+             ровно один пробный запрос, успех возвращает цепь в CLOSED. -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-circuitbreaker</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+
         <!-- Jackson — сериализация JSON -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
