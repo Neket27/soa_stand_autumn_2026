@@ -75,7 +75,7 @@ services:
 
   orders:
     deploy:
-      replicas: 5
+      replicas: 1
     # ORDERS_DIR — только для локальных экспериментов (например,
     # ORDERS_DIR=./examples/go); проверка всегда собирает ./orders.
     build: ${ORDERS_DIR:-./orders}
@@ -86,6 +86,7 @@ services:
       INVENTORY_URL: http://mocks:8080
       KAFKA_BOOTSTRAP_SERVERS: kafka:9094
       KAFKA_GROUP_ID: orders-charge
+      WARMUP_BARRIER_EXPECTED: 1
     # ЛОКАЛЬНЫЙ ЭКСПЕРИМЕНТ: порт закомментирован, чтобы --scale работал
     # (несколько контейнеров не могут делить 127.0.0.1:8080).
     # Внутренним сервисам это не мешает: они ходят на http://orders:8080,
