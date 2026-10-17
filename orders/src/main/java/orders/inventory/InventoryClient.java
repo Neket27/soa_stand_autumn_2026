@@ -1,17 +1,12 @@
 package orders.inventory;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import orders.api.dto.InventoryReserveItemsDto;
 import orders.api.dto.ItemPayloadInventory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import org.springframework.http.converter.HttpMessageConverter;
-import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 import orders.api.dto.Item;
 
-import java.time.Duration;
 import java.util.List;
 
 /**
@@ -41,22 +36,14 @@ public class InventoryClient {
     @Value("${INVENTORY_URL}")
     private String inventoryUrl;
 
-    // Таймауты обязательны: reserve() вызывается В HTTP-ПУТИ POST /orders,
-    // и зависший Inventory без них подвесил бы весь запрос (бюджет 1 с на
-    // POST, S3/S4). При сбое получаем исключение → заказ не создаётся.
-    public InventoryClient(ObjectMapper objectMapper) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(Duration.ofSeconds(5));
-        factory.setReadTimeout(Duration.ofSeconds(10));
-        RestTemplate restTemplate = new RestTemplate(factory);
-        // Подставляем контекстный ObjectMapper: только он знает snake_case-
-        // стратегию (JacksonConfig). Без неё DTO ушёл бы в JSON как
-        // {"orderId":...}, а Inventory ждёт {"order_id":...}.
-        for (HttpMessageConverter<?> converter : restTemplate.getMessageConverters()) {
-            if (converter instanceof MappingJackson2HttpMessageConverter jackson) {
-                jackson.setObjectMapper(objectMapper);
-            }
-        }
+    // Таймауты и пул соединений заданы в общем RestTemplate-бине
+    // (orders.config.RestTemplateConfig): reserve() вызывается В HTTP-ПУТИ
+    // POST /orders, и зависший Inventory без таймаутов подвесил бы весь
+    // запрос (бюджет 1 с на POST, S3/S4). Пул Apache HttpClient убирает
+    // connect+teardown на каждый вызов — стресс-тест на 1000/с иначе
+    // давал хвост латентности до 1.62 с. При сбое получаем исключение
+    // → заказ не создаётся.
+    public InventoryClient(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
 

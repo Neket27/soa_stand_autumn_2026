@@ -1,6 +1,5 @@
 package orders.payment;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import orders.api.dto.PaymentChargeDto;
 import lombok.extern.slf4j.Slf4j;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
@@ -9,12 +8,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.http.converter.HttpMessageConverter;
-import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.ResourceAccessException;
 import orders.store.OrderRepository;
 
@@ -84,7 +80,7 @@ public class PaymentClient {
     @Value("${PAYMENT_URL}")
     private String paymentUrl;
 
-    public PaymentClient(OrderRepository orderRepository, ObjectMapper objectMapper,
+    public PaymentClient(OrderRepository orderRepository, RestTemplate restTemplate,
                          @Value("${PAYMENT_BREAKER_WAIT_S:25}") long breakerWaitSeconds) {
         this.orderRepository = orderRepository;
         // Настройка цепи под наш сценарий «сервис молчит» (S4):
@@ -111,31 +107,31 @@ public class PaymentClient {
                 .waitDurationInOpenState(Duration.ofSeconds(breakerWaitSeconds))
                 .build();
         this.paymentBreaker = CircuitBreaker.of("payment", breakerConfig);
-        // Таймауты: без них RestTemplate ждёт ответ бесконечно,
-        // и при "зависшем" Payment навсегда зависнет Consumer/Reaper.
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout(Duration.ofSeconds(5));
-        factory.setReadTimeout(Duration.ofSeconds(10));
-        RestTemplate restTemplate = new RestTemplate(factory);
-        // Подставляем контекстный ObjectMapper: только он знает snake_case-
-        // стратегию (JacksonConfig). Без неё DTO ушёл бы в JSON как
-        // {"orderId":...}, а Payment ждёт {"order_id":...,"amount_cents":...}
-        // — и отвечал бы 400 на каждый запрос (так и было: 2000+ ошибок).
-        for (HttpMessageConverter<?> converter : restTemplate.getMessageConverters()) {
-            if (converter instanceof MappingJackson2HttpMessageConverter jackson) {
-                jackson.setObjectMapper(objectMapper);
-            }
-        }
+        // Таймауты и пул соединений заданы в общем RestTemplate-бине
+        // (orders.config.RestTemplateConfig): таймауты без RestTemplate'а
+        // ждали бы ответ бесконечно, а при "зависшем" Payment навсегда
+        // завис бы Consumer/Reaper; пул убирает connect+teardown на каждый
+        // charge() (стресс-тест 1000/с иначе даёт хвост до 1.62 с).
+        // Snake_case ObjectMapper подставляется там же.
         this.restTemplate = restTemplate;
     }
 
     /**
-     * Попытка оплаты заказа.
-     *
-     * Сумма берётся из БД заказа (amount_cents = Σ qty × price_cents):
+     * Попытка оплаты заказа (сумма читается из БД — путь Reaper'а).
      */
     public PaymentResult charge(String orderId) {
-        long amountCents = orderRepository.getAmount(orderId);
+        return charge(orderId, orderRepository.getAmount(orderId));
+    }
+
+    /**
+     * Попытка оплаты заказа с уже известной суммой.
+     *
+     * Kafka-Consumer уже читает статус+сумму одним запросом
+     * (OrderRepository.getStatusAndAmount) — без этого параметра
+     * charge() сделал бы ВТОРОЙ SELECT только ради amount_cents
+     * (5000 лишних запросов/с на стресс-тесте 5000 заказов/с).
+     */
+    public PaymentResult charge(String orderId, long amountCents) {
         String idempotencyKey = "pay-" + orderId;
 
         // Ключ идемпотентности — в ЗАГОЛОВКЕ: так его читает заглушка

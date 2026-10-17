@@ -100,7 +100,9 @@ public class CreateOrderService {
 
         // Резерв — ВНЕ транзакции: висящий Inventory не должен держать
         // соединение из пула (10 штук)
+        long t0 = System.nanoTime();
         inventoryClient.reserve(orderId, request.items());
+        long t1 = System.nanoTime();
 
         try {
             transactionTemplate.executeWithoutResult(status -> {
@@ -110,6 +112,17 @@ public class CreateOrderService {
         } catch (RuntimeException e) {
             recordReleaseDuty(orderId, e);
             throw e;
+        }
+        long t2 = System.nanoTime();
+
+        // Диагностика хвоста латентности (стресс 1000/с): если POST
+        // обрабатывается дольше 250 мс, пишем, ГДЕ именно ушло время —
+        // внешний вызов reserve() к Inventory или транзакция с двумя
+        // INSERT'ами. Работает в паре с SlowRequestFilter.
+        long totalMs = (t2 - t0) / 1_000_000;
+        if (totalMs >= 250) {
+            log.warn("SLOW create {}: reserve {} мс, tx {} мс (итого {} мс)",
+                    orderId, (t1 - t0) / 1_000_000, (t2 - t1) / 1_000_000, totalMs);
         }
 
         return new OrderCreated(orderId, "pending");

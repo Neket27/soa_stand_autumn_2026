@@ -34,4 +34,5 @@ EXPOSE 8080
 ENTRYPOINT ["java", \
     "-XX:TieredStopAtLevel=1", \
     "-Xms128m", "-Xmx256m", \
+    "-Xlog:gc*:file=/tmp/gc.log:time,uptime:filecount=3,filesize=20M", \
     "-jar", "app.jar"]

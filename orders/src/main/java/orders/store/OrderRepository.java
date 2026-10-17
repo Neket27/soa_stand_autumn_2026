@@ -102,6 +102,48 @@ public class OrderRepository {
         return results.isEmpty() ? null : OrderStatus.valueOf(results.get(0));
     }
 
+    /** Статус и сумма заказа одним запросом (см. getStatusAndAmount). */
+    public record OrderState(OrderStatus status, long amountCents) {}
+
+    /**
+     * Статус + сумма ОДНИМ запросом (null — заказа нет).
+     *
+     * Оплата в Kafka-пути раньше делала ДВА запроса: getStatus() для
+     * проверки идемпотентности и getAmount() внутри charge(). На
+     * стресс-тесте 5000 заказов/с это 5000 лишних SELECT/с на Postgres
+     * (который и так упирался в CPU). Один запрос вместо двух —
+     * каноничная экономия round-trip'ов в горячем пути.
+     */
+    public OrderState getStatusAndAmount(String orderId) {
+        String sql = "SELECT status, amount_cents FROM orders WHERE id = ?";
+        List<OrderState> results = jdbc.query(sql, (rs, rowNum) -> new OrderState(
+                OrderStatus.valueOf(rs.getString("status")),
+                rs.getLong("amount_cents")
+        ), orderId);
+        return results.isEmpty() ? null : results.get(0);
+    }
+
+    /**
+     * Есть ли среди id хоть один PENDING (одним EXISTS-запросом).
+     * Используется прогрев-дренажем: опрашивать тысячи id отдельными
+     * SELECT'ами каждые 200 мс — сама по себе нагрузка на БД.
+     */
+    public boolean anyPending(List<String> ids) {
+        if (ids.isEmpty()) {
+            return false;
+        }
+        String csv = String.join(",", ids);
+        String sql = """
+            SELECT EXISTS(
+                SELECT 1 FROM orders
+                WHERE status = 'PENDING'
+                  AND id = ANY(string_to_array(?, ',')::text[])
+            )
+            """;
+        Boolean result = jdbc.queryForObject(sql, Boolean.class, csv);
+        return Boolean.TRUE.equals(result);
+    }
+
     /**
      * PENDING заказы, которые «зависли»: created_at старше olderThan.
      *

@@ -23,7 +23,7 @@ public class DataSourceConfig {
             @Value("${DATABASE_URL}") String databaseUrl,
             @Value("${DB_USER:}") String username,
             @Value("${DB_PASSWORD:}") String password,
-            @Value("${DB_POOL_SIZE:16}") int poolSize) {
+            @Value("${DB_POOL_SIZE:18}") int poolSize) {
 
         // Извлекаем учётные данные из URL, если они там есть
         String urlWithoutCredentials = databaseUrl;
@@ -58,13 +58,19 @@ public class DataSourceConfig {
         dataSource.setPassword(password);
         dataSource.setDriverClassName("org.postgresql.Driver");
         // Размер пула под конфигурацию «12 партиций, concurrency 12»:
-        // 12 потоков коньюмера + ~4 (API-запросы, outbox-поллер, Reaper).
-        // Соединение держится только на время запроса — HTTP-вызов Payment
-        // пул не занимает, поэтому 16 покрывает пик без ожидания.
+        // 12 потоков коньюмера + ~6 (API-запросы, outbox-поллер, Reaper,
+        // прогрев). Соединение держится только на время запроса — HTTP-вызов
+        // Payment пул не занимает.
+        //
+        // 16 не хватало всплескам стресс-теста 5000 заказов/с: PoolWatchdog
+        // поймал active 16/16 c waiting 168 (весь Tomcat сидел в очереди
+        // на соединение, что и давало секундовые хвосты tx). 18 снимает
+        // очередь в не-столкновительных всплесках; во время настоящих
+        // стоп-моментов БД очередь на пуле лишь усиливает эффект.
         //
         // Потолок сверху — max_connections=100 у Postgres (дефолт) на ВСЕ
-        // реплики orders: 5 × 16 = 80, запас ~20 на healthcheck'и и раннер.
-        // Больше 20 на инстанс при 5 репликах ставить нельзя — упрутся в
+        // реплики orders: 5 × 18 = 90, запас ~10 на healthcheck'и и раннер.
+        // Больше 19 на инстанс при 5 репликах ставить нельзя — упрутся в
         // «too many connections». Меняется через DB_POOL_SIZE без правки кода.
         dataSource.setMaximumPoolSize(poolSize);
         return dataSource;

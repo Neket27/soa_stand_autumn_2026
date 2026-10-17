@@ -5,11 +5,15 @@ import lombok.extern.slf4j.Slf4j;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.SendResult;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import orders.store.OutboxRepository;
 
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -49,6 +53,17 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class OutboxDispatcher {
 
+    /** Размер пачки claim'а: 100 событий — один round-trip на отправку и пометку. */
+    private static final int BATCH_SIZE = 100;
+
+    /**
+     * Тайм-аут видимости claim'а: если реплика упала между claim и
+     * markSent, строку заберёт другая реплика через 60 с. Больше границы
+     * ожидания доставки (get(15 с) выше): живая реплика успевает либо
+     * пометить пачку, либо отпустить тик.
+     */
+    private static final Duration VISIBILITY_TIMEOUT = Duration.ofSeconds(60);
+
     private final OutboxRepository outboxRepository;
     private final KafkaTemplate<String, String> kafkaTemplate;
 
@@ -59,39 +74,56 @@ public class OutboxDispatcher {
      */
     @Scheduled(fixedDelay = 200)
     public void pump() {
-        List<OutboxRepository.OutboxEvent> events = outboxRepository.findUnsent(100);
-        for (OutboxRepository.OutboxEvent event : events) {
-            try {
-                // get(15, SECONDS) — ждём подтверждения от Kafka: только после
-                // успешной отправки помечаем строку. Если бы отправляли
-                // «в никуда» (fire-and forget), markSent подтвердил бы
-                // доставку, которой не было.
-                //
-                // Таймаут нужен как страховка поверх конфига продюсера:
-                // delivery.timeout.ms = 10 с ограничивает только future, а
-                // send() до создания future блокируется максимум на
-                // max.block.ms = 5 с (KafkaConfig). 15 с > 10 с + 5 с, то
-                // есть в норме сработает раньше продюсерский таймаут, но
-                // обезопасит от зависшей Sender-нити или будущей правки
-                // конфига: get() без таймаута не имеет собственной границы.
-                kafkaTemplate.send("orders-charge", event.orderId(), event.payload())
-                        .get(15, TimeUnit.SECONDS);
-                outboxRepository.markSent(event.id());
-            } catch (InterruptedException e) {
-                // Нас прервали (остановка приложения): восстанавливаем флаг,
-                // иначе шедулер не сумеет корректно завершить поток, и
-                // выходим из пачки — события уйдут на следующем тике.
-                Thread.currentThread().interrupt();
-                log.info("Outbox: отправка прервана, выходим из тика");
-                return;
-            } catch (Exception e) {
-                // Kafka недоступна: строки остаются без sent_at,
-                // попробуем на следующем тике. Прерываем пачку —
-                // если Kafka лежит, нет смысла падать на каждой строке.
-                log.warn("Outbox: не удалось отправить событие {} (заказ {}), повтор на следующем тике: {}",
-                        event.id(), event.orderId(), e.getMessage());
-                return;
+        // Claim выдаёт пачку ТОЛЬКО этой реплике (SKIP LOCKED + claimed_at):
+        // остальные 4 реплики в этом же тике возьмут другие строки или
+        // ничего. Раньше все читали одни и те же 100 строк — Kafka получала
+        // события ~3,3-кратно, а UPDATE sent_at по одним строкам из 5 реплик
+        // давал блокировки в Postgres (см. javadoc OutboxRepository.claimBatch).
+        List<OutboxRepository.OutboxEvent> events =
+                outboxRepository.claimBatch(BATCH_SIZE, VISIBILITY_TIMEOUT);
+        if (events.isEmpty()) {
+            return;
+        }
+        try {
+            // Отправляем пачку ПАРАЛЛЕЛЬНО: send() асинхронный, сеть и
+            // батчинг продюсера работают на всех событиях одновременно.
+            // Раньше было последовательное get() на каждое событие — тик
+            // стоил N round-trips и не поспевал за потоком заказов на
+            // высоких темпах.
+            //
+            // get(15, SECONDS) — ждём подтверждения Kafka по ВСЕМ событиям
+            // пачки и только после этого помечаем: «в никуда» не отправляем
+            // (fire-and-forget подтвердил бы markSent доставки, которой
+            // не было).
+            //
+            // Таймаут как страховка поверх конфига продюсера:
+            // delivery.timeout.ms = 10 с ограничивает только future, а
+            // send() до создания future блокируется максимум на
+            // max.block.ms = 5 с (KafkaConfig). 15 с > 10 с + 5 с.
+            List<Future<SendResult<String, String>>> futures = new ArrayList<>(events.size());
+            for (OutboxRepository.OutboxEvent event : events) {
+                futures.add(kafkaTemplate.send("orders-charge", event.orderId(), event.payload()));
             }
+            for (Future<SendResult<String, String>> future : futures) {
+                future.get(15, TimeUnit.SECONDS);
+            }
+            outboxRepository.markSent(events.stream()
+                    .map(OutboxRepository.OutboxEvent::id)
+                    .toList());
+        } catch (InterruptedException e) {
+            // Нас прервали (остановка приложения): восстанавливаем флаг,
+            // иначе шедулер не сумеет корректно завершить поток. События
+            // уже заявлены: они вернутся к другим репликам (или к нам после
+            // рестарта) по истечении visibility timeout — дубль безопасен.
+            Thread.currentThread().interrupt();
+            log.info("Outbox: отправка прервана, выходим из тика");
+        } catch (Exception e) {
+            // Kafka недоступна: пачка остаётся непомеченной, повтор — когда
+            // claim-тайм-аут истечёт (или Kafka поднимется раньше и чей-то
+            // тик заберёт пачку заново). Прерывать тик не нужно — остальные
+            // события пачки уже в очереди продюсера.
+            log.warn("Outbox: не удалось отправить пачку из {} событий, повтор после claim-тайм-аута: {}",
+                    events.size(), e.getMessage());
         }
     }
 }

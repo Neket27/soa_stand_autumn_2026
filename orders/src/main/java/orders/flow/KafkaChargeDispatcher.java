@@ -71,22 +71,27 @@ public class KafkaChargeDispatcher {
             //    прошлого запуска стенда: Kafka-топик живёт дольше БД).
             //    Ретрай бессмыслен — заказ никогда не появится, а каждая
             //    попытка стоит FixedBackOff (5 с). Подтверждаем и идём дальше.
-            OrderStatus current = orderRepository.getStatus(orderId);
-            if (current == null) {
+            //
+            // Статус и сумма берутся ОДНИМ запросом: раньше это были
+            // getStatus() здесь + getAmount() внутри charge() — два
+            // SELECT на событие, 5000 лишних запросов/с на стресс-тесте
+            // 5000 заказов/с (Postgres упирался в CPU).
+            OrderRepository.OrderState state = orderRepository.getStatusAndAmount(orderId);
+            if (state == null) {
                 log.warn("Событие для неизвестного заказа {} (offset {}), пропускаю",
                         orderId, record.offset());
                 ack.acknowledge();
                 return;
             }
 
-            if (current != OrderStatus.PENDING) {
+            if (state.status() != OrderStatus.PENDING) {
                 // Уже оплачен или отклонён — дубль события, подтверждаем
                 ack.acknowledge();
                 return;
             }
 
             // 2. Вызываем Payment API
-            PaymentClient.PaymentResult result = paymentClient.charge(orderId);
+            PaymentClient.PaymentResult result = paymentClient.charge(orderId, state.amountCents());
 
             // 3. Обрабатываем результат — ВСЕ ветки обязательны!
             switch (result.status()) {

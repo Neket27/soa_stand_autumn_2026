@@ -56,6 +56,19 @@
             <version>2.2.0</version>
         </dependency>
 
+        <!-- Apache HttpClient 5 — ПУЛИНГ соединений для REST-вызовов
+             (см. RestTemplateConfig). SimpleClientHttpRequestFactory (JDK
+             HttpURLConnection) открывает НОВОЕ TCP-соединение на каждый
+             запрос и закрывает его: при 1000 заказов/с это ~200 connect+
+             teardown в секунду на реплику → churn и хвосты латентности
+             (наш потолок: 284/12000 ответов > 1 с при 1000/с). Пул
+             переиспользует тёплые соединения (keep-alive) и держит
+             ограниченное их число. Версию управляет Spring Boot parent. -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+        </dependency>
+
         <!-- Jackson — сериализация JSON -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
