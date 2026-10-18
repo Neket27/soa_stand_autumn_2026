@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.5</version>
+    </parent>
+
+    <groupId>orders</groupId>
+    <artifactId>orders</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <java.version>21</java.version>
+    </properties>
+
+    <dependencies>
+        <!-- Spring Boot Web — REST API -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Spring Boot JDBC — работа с PostgreSQL -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <!-- PostgreSQL драйвер -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Spring Kafka — интеграция с Kafka -->
+        <!-- Используется при ORDERS_DISPATCH=kafka -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
+
+        <!-- Resilience4j — Circuit Breaker для вызовов Payment.
+             Паттерн «предохранитель»: при молчании Payment (таймауты)
+             цепь переходит в OPEN и вызовы НЕ отправляются в сеть,
+             вместо них быстрый отказ. Через waitDuration — HALF_OPEN:
+             ровно один пробный запрос, успех возвращает цепь в CLOSED. -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-circuitbreaker</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+
+        <!-- Apache HttpClient 5 — ПУЛИНГ соединений для REST-вызовов
+             (см. RestTemplateConfig). SimpleClientHttpRequestFactory (JDK
+             HttpURLConnection) открывает НОВОЕ TCP-соединение на каждый
+             запрос и закрывает его: при 1000 заказов/с это ~200 connect+
+             teardown в секунду на реплику → churn и хвосты латентности
+             (наш потолок: 284/12000 ответов > 1 с при 1000/с). Пул
+             переиспользует тёплые соединения (keep-alive) и держит
+             ограниченное их число. Версию управляет Spring Boot parent. -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+        </dependency>
+
+        <!-- Jackson — сериализация JSON -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- Bean Validation — валидация DTO через аннотации
+             (@NotBlank, @NotEmpty, @Min, @Valid) на уровне полей -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Lombok — генерация геттеров/сеттеров/конструкторов на этапе компиляции.
+             Пока в коде не используется (записи и явные конструкторы),
+             добавлен для будущего удобства.
+             В IDEA: включить annotation processing (Settings → Compiler →
+             Annotation Processors → Enable) или установить Lombok-плагин. -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Тесты -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
