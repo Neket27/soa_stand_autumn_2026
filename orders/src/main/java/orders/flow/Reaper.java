@@ -42,6 +42,18 @@ public class Reaper {
     private final ReleaseDutyRepository releaseDutyRepository;
 
     /**
+     * Порог «зависшего» заказа.
+     *
+     * Свежий PENDING ещё разбирает Consumer (событие в Kafka, вызов
+     * Payment в полёте), поэтому браться за него в первую секунду жизни
+     * незачем: это параллельный звонок в Payment по тому же заказу —
+     * лишние запросы и гонка. 30 с — с запасом, больше чем нужно
+     * асинхронному пути, чтобы либо оплатить заказ, либо показать, что
+     * он застрял.
+     */
+    private static final Duration PENDING_RETRY_AFTER = Duration.ofSeconds(30);
+
+    /**
      * Компенсации из журнала release_duties.
      *
      * Это двойник releaseReservations() для случая, когда заказа НЕТ:
@@ -63,18 +75,6 @@ public class Reaper {
             }
         }
     }
-
-    /**
-     * Порог «зависшего» заказа.
-     *
-     * Свежий PENDING ещё разбирает Consumer (событие в Kafka, вызов
-     * Payment в полёте), поэтому браться за него в первую секунду жизни
-     * незачем: это параллельный звонок в Payment по тому же заказу —
-     * лишние запросы и гонка. 30 с — с запасом больше, чем нужно
-     * асинхронному пути, чтобы либо оплатить заказ, либо показать, что
-     * он застрял.
-     */
-    private static final Duration PENDING_RETRY_AFTER = Duration.ofSeconds(30);
 
     /**
      * Каждые 10 секунд:
