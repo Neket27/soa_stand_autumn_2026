@@ -129,7 +129,11 @@ public class WarmupRunner implements ApplicationRunner {
                         OrderRepository orderRepository,
                         WarmupBarrierRepository warmupBarrierRepository,
                         @Value("${PORT:8080}") int port,
-                        @Value("${WARMUP_BARRIER_EXPECTED:5}") int expectedPeers) {
+                        // Дефолт 1: официальная проверка запускает одну реплику
+                        // (compose из master курса, без deploy.replicas) — ждать
+                        // больше нечего. Многорепликовый локальный запуск задаёт
+                        // число реплик явно: WARMUP_BARRIER_EXPECTED=<N>.
+                        @Value("${WARMUP_BARRIER_EXPECTED:1}") int expectedPeers) {
         this.restTemplate = restTemplate;
         this.orderRepository = orderRepository;
         this.warmupBarrierRepository = warmupBarrierRepository;

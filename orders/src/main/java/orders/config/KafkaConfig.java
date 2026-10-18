@@ -53,7 +53,10 @@ import java.util.Map;
 @EnableKafka
 public class KafkaConfig {
 
-    @Value("${KAFKA_BOOTSTRAP_SERVERS}")
+    // Дефолт localhost:9092 — официальная проверка не задаёт переменную и не
+    // имеет брокера: там работает встроенный Kafka контейнера (см.
+    // orders/kafka/embedded-entrypoint.sh). Локально адрес приходит из compose.
+    @Value("${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}")
     private String bootstrapServers;
 
     @Value("${KAFKA_GROUP_ID:orders-charge}")
@@ -73,8 +76,8 @@ public class KafkaConfig {
 
     @Bean
     public NewTopic ordersChargeTopic() {
-        // 3 партиции — можно масштабировать consumer-реплики
-        return new NewTopic("orders-charge", 12, (short) 1);
+        // 1 партиции — можно масштабировать consumer-реплики
+        return new NewTopic("orders-charge", 1, (short) 1);
     }
 
     /**
