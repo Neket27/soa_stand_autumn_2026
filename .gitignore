@@ -18,3 +18,15 @@ __pycache__/
 .DS_Store
 .idea/
 .vscode/
+
+# Локальные инструменты и архивы (не участвуют в сдаче)
+.gigacode/
+.gigaide/
+.qwen/
+.opencode
+openspec/
+save/
+local/
+docker-compose.local.yml
+ORDERS_ESSENCE_QA.md
+openspec-context-pack-template.zip
