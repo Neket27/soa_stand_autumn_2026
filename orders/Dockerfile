@@ -20,6 +20,7 @@ RUN mvn clean package -DskipTests
 FROM eclipse-temurin:21-jre
 WORKDIR /app
 COPY --from=build /app/target/orders-*.jar app.jar
+
 # Kafka-дистрибутив (~250 МБ) и наши конфиг/скрипт встроенного брокера.
 COPY --from=kafka-dist /opt/kafka /opt/kafka
 COPY kafka/server.properties /opt/kafka/config/server.properties
