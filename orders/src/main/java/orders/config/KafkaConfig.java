@@ -74,10 +74,13 @@ public class KafkaConfig {
         return AdminClient.create(configs);
     }
 
+    // 12 партиций: charge() у Payment может отвечать секундами (сценарий S3 —
+    // latency 2000 мс), и без параллелизма 20 оплат идут последовательно
+    // (40 с > wait_s=30 раннера — S3 падает). 12 консюмер-потоков на 12
+    // партициях делают их параллельно (~4 с).
     @Bean
     public NewTopic ordersChargeTopic() {
-        // 1 партиции — можно масштабировать consumer-реплики
-        return new NewTopic("orders-charge", 1, (short) 1);
+        return new NewTopic("orders-charge", 12, (short) 1);
     }
 
     /**

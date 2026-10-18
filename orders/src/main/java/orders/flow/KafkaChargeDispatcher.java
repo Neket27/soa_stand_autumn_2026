@@ -59,6 +59,9 @@ public class KafkaChargeDispatcher {
      * не «вслепую» сразу. После исчерпания попыток событие пропускается,
      * заказ остаётся PENDING — его повторит Reaper.
      */
+    // Партиций столько же, сколько consumer-потоков (KafkaConfig.NewTopic):
+    // оплата с высокой задержкой Payment (S3: 2000 мс) должна идти
+    // параллельно, иначе очередь оплат не укладывается в wait_s раннера.
     @KafkaListener(topics = "orders-charge", groupId = "${KAFKA_GROUP_ID:orders-charge}", concurrency = "${KAFKA_CONCURRENCY:12}")
     public void onCharge(ConsumerRecord<String, String> record, Acknowledgment ack) {
         String orderId = record.value();
