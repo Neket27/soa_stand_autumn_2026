@@ -74,9 +74,12 @@ public class RestTemplateConfig {
     public RestTemplate busRestTemplate() {
         PoolingHttpClientConnectionManager connectionManager =
                 new PoolingHttpClientConnectionManager();
-        // Пул под размер пачки EventsPublisher (100 событий параллельно),
-        // но ограничен: шина и так в отказе, плодить сотню сокетов смысла
-        // нет — очередь и так переживёт отказ в БД.
+        // Пул — ГЛАВНЫЙ предел параллелизма EventsPublisher: он шлёт пачку
+        // по виртуальному потоку на событие, и число потоков ничего не
+        // ограничивает. 32 запроса идут одновременно, остальные события
+        // пачки упираются в connectionRequestTimeout (2 с) ниже и уходят
+        // в повтор. Шина и так может быть в отказе (S6) — плодить сотню
+        // сокетов смысла нет: очередь событий и так переживёт отказ в БД.
         connectionManager.setMaxTotal(32);
         connectionManager.setDefaultMaxPerRoute(32);
         connectionManager.setDefaultConnectionConfig(ConnectionConfig.custom()
