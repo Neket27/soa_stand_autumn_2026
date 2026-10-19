@@ -1,10 +1,12 @@
 package orders.store;
 
-import lombok.RequiredArgsConstructor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import orders.api.dto.Item;
 import orders.api.dto.Order;
+import orders.api.dto.OrderPaidEvent;
 import orders.flow.OrderStatus;
 
 import java.time.Duration;
@@ -35,10 +37,21 @@ import java.util.List;
  * ретраит Consumer; PENDING старше 30 с подбирает Reaper.
  */
 @Repository
-@RequiredArgsConstructor
 public class OrderRepository {
 
     private final JdbcTemplate jdbc;
+
+    private final OutboxRepository outboxRepository;
+
+    private final TransactionTemplate transactionTemplate;
+
+    public OrderRepository(JdbcTemplate jdbc,
+                           OutboxRepository outboxRepository,
+                           PlatformTransactionManager transactionManager) {
+        this.jdbc = jdbc;
+        this.outboxRepository = outboxRepository;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+    }
 
     public void insertPending(String orderId, String userId, long amountCents, List<Item> items) {
         String sql = """
@@ -62,6 +75,62 @@ public class OrderRepository {
         String sql = "UPDATE orders SET status = ? WHERE id = ? AND status = 'PENDING'";
         int updated = jdbc.update(sql, newStatus.name(), orderId);
         return updated > 0;
+    }
+
+    /**
+     * Атомарно: переход заказа в PAID + запись события order.paid в outbox
+     * (задание 2, contracts/events.yaml).
+     *
+     * === ГЛАВНАЯ ГАРАНТИЯ ===
+     *
+     * Требования задания: «событие не публикуется для заказа, которого нет
+     * или который не оплачен» и «каждый заказ, который стал paid, в итоге
+     * публикуется». Обе стороны одного факта — статус PAID и событие в
+     * очереди — обязаны появиться ОДНОЙ транзакцией. Иначе:
+     *   — статус закоммичен, событие не записано (упал процесс между
+     *     UPDATE и INSERT) → paid-заказ навсегда без события, S6/S7 падают;
+     *   — событие записано, статус откатился → событие об оплате
+     *     неоплаченного заказа, S6/S7 падают на «события только для
+     *     оплаченных».
+     *
+     * === КТО ВЫЗЫВАЕТ ===
+     *
+     * Обе точки перехода в PAID: KafkaChargeDispatcher (201 от Payment)
+     * и Reaper (повтор оплаты зависшего PENDING). Кто из них победил в
+     * гонке за WHERE status = 'PENDING' — тот и пишет событие; проигравший
+     * получает false и ничего не добавляет (иначе — два события с разными
+     * id на один заказ, что S6 считает нарушением «у всех копий один id»).
+     *
+     * Прогрев-заказы (warmup-user) НЕ исключаются: WarmupRunner шлёт их
+     * и при холодном старте, и при каждом рестарте контейнера (kill -9
+     * посреди S7/S8), их списания попадают в факты сценария, а проверка
+     * «каждый paid заказ есть в шине» требует события для ЛЮБОГО заказа
+     * с итогом paid из фактов. warmup-заказ либо paid (событие нужно),
+     * либо rejected (события нет — не публикуется вовсе), так что
+     * проверка «события только для оплаченных» не задевается. События
+     * холодного старта затирает /admin/reset перед сценарием.
+     *
+     * @return true, если именно этот вызов перевёл заказ в PAID
+     */
+    public boolean markPaid(String orderId, OrderPaidEvent event) {
+        return transactionTemplate.execute(status -> {
+            // UPDATE ... RETURNING: одна команда даёт и переход, и
+            // успешную проверку «заказ был PENDING» — без второго
+            // round-trip и без гонки между ними.
+            List<String> users = jdbc.query(
+                    "UPDATE orders SET status = 'PAID' "
+                            + "WHERE id = ? AND status = 'PENDING' "
+                            + "RETURNING user_id",
+                    (rs, rowNum) -> rs.getString("user_id"), orderId);
+            if (users.isEmpty()) {
+                // Заказ уже не PENDING: либо уже оплачен Reaper'ом/Consumer'ом
+                // (событие записал тот, кто победил), либо заказа нет вовсе
+                // (запись события для несуществующего заказа — нарушение).
+                return false;
+            }
+            outboxRepository.insert(orderId, OrderPaidEvent.TYPE, event.payload());
+            return true;
+        });
     }
 
     /**

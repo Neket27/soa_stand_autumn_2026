@@ -10,6 +10,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import orders.store.OutboxRepository;
 
+import java.sql.Timestamp;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -80,7 +81,7 @@ public class OutboxDispatcher {
         // события ~3,3-кратно, а UPDATE sent_at по одним строкам из 5 реплик
         // давал блокировки в Postgres (см. javadoc OutboxRepository.claimBatch).
         List<OutboxRepository.OutboxEvent> events =
-                outboxRepository.claimBatch(BATCH_SIZE, VISIBILITY_TIMEOUT);
+                outboxRepository.claimBatch("order.charge", BATCH_SIZE, VISIBILITY_TIMEOUT);
         if (events.isEmpty()) {
             return;
         }
@@ -124,6 +125,36 @@ public class OutboxDispatcher {
             // события пачки уже в очереди продюсера.
             log.warn("Outbox: не удалось отправить пачку из {} событий, повтор после claim-тайм-аута: {}",
                     events.size(), e.getMessage());
+        }
+    }
+
+    /**
+     * Чистка отправленных строк outbox (раз в час).
+     *
+     * === ЗАЧЕМ И ПОЧЕМУ ТАК (вопрос на защите «что растёт в базе») ===
+     *
+     * outbox_events растёт с каждым заказом (и charge, и paid события).
+     * Отправленная строка (sent_at NOT NULL) свою роль сыграла: markSent —
+     * подтверждение доставки, дубль возможен только в узком окне между
+     * send и markSent. Стало быть, sent-строки старше часа удаляются
+     * безо всякого риска для at-least-once.
+     *
+     * Свежие sent-строки НЕ трогаем: окно «send → markSent → реплика
+     * упала → повтор из-за visibility timeout» ещё может сыграть, и
+     * строка обязана быть на месте.
+     *
+     * Незасланные строки не трогаем никогда — они и есть очередь.
+     */
+    @Scheduled(fixedDelay = 3_600_000, initialDelay = 3_600_000)
+    public void cleanupSent() {
+        try {
+            int removed = outboxRepository.deleteSentBefore(
+                    Timestamp.from(java.time.Instant.now().minus(java.time.Duration.ofHours(1))));
+            if (removed > 0) {
+                log.info("Outbox: удалено {} отправленных событий старше часа", removed);
+            }
+        } catch (Exception e) {
+            log.warn("Outbox: чистка не удалась (не критично): {}", e.getMessage());
         }
     }
 }

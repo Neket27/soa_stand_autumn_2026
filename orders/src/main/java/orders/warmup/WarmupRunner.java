@@ -5,6 +5,7 @@ import orders.api.dto.Item;
 import orders.api.dto.OrderCreated;
 import orders.api.dto.OrderRequest;
 import orders.store.OrderRepository;
+import orders.store.OutboxRepository;
 import orders.store.WarmupBarrierRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
@@ -107,6 +108,28 @@ public class WarmupRunner implements ApplicationRunner {
     private static final long DRAIN_TIMEOUT_MS = 20_000;
 
     /**
+     * Сколько ждать, пока события оплаты прогрев-заказов (order.paid)
+     * уйдут из outbox в шину. Отдельный бюджет от дренажа заказов:
+     * заказы уже вне PENDING, осталось переслать события.
+     *
+     * === ЗАЧЕМ ЭТОТ ДРЕНАЖ ===
+     *
+     * События order.paid уходят в шину ФОНОМ (EventsPublisher, 200 мс).
+     * Прогрев при холодном старте завершился бы по статусам заказов, а
+     * публикация событий ещё шла бы — и тогда события прогрев-заказов
+     * прилетали бы в шину УЖЕ во время S1: /admin/reset перед сценарием
+     * стирает факты шины, но их списания к тому моменту стёрты тоже,
+     * и проверка «paid: деньги списаны и товар зарезервирован» падала
+     * бы на заказах «paid, но без списания в фактах» (найдено прогоном
+     * задания 2). С дренажем события доходят до шины ДО /healthz=200,
+     * а reset перед первым сценарием их затирает — факты чистые.
+     *
+     * Fail-open, как и остальные ожидания прогрева: не дождались —
+     * идём дальше с warning, /healthz не должен зависнуть навсегда.
+     */
+    private static final long EVENT_DRAIN_TIMEOUT_MS = 15_000;
+
+    /**
      * Сколько ждать, пока все реплики встанут в барьер готовности.
      * Fail-open: упавшая реплика не должна навечно держать кластер
      * в 503 (раннер ждёт healthz не дольше 120 с).
@@ -121,12 +144,14 @@ public class WarmupRunner implements ApplicationRunner {
 
     private final RestTemplate restTemplate;
     private final OrderRepository orderRepository;
+    private final OutboxRepository outboxRepository;
     private final WarmupBarrierRepository warmupBarrierRepository;
     private final String selfOrdersUrl;
     private final int expectedPeers;
 
     public WarmupRunner(RestTemplate restTemplate,
                         OrderRepository orderRepository,
+                        OutboxRepository outboxRepository,
                         WarmupBarrierRepository warmupBarrierRepository,
                         @Value("${PORT:8080}") int port,
                         // Дефолт 1: официальная проверка запускает одну реплику
@@ -136,6 +161,7 @@ public class WarmupRunner implements ApplicationRunner {
                         @Value("${WARMUP_BARRIER_EXPECTED:1}") int expectedPeers) {
         this.restTemplate = restTemplate;
         this.orderRepository = orderRepository;
+        this.outboxRepository = outboxRepository;
         this.warmupBarrierRepository = warmupBarrierRepository;
         this.selfOrdersUrl = "http://localhost:" + port + "/orders";
         this.expectedPeers = expectedPeers;
@@ -158,13 +184,22 @@ public class WarmupRunner implements ApplicationRunner {
         long sentMs = (System.nanoTime() - t0) / 1_000_000;
 
         boolean drained = awaitDrain(ids);
+        // Дренаж событий — только на холодном старте: события прогрева
+        // должны уйти в шину ДО /healthz, чтобы reset перед S1 их затёр.
+        // При рестарте (S7/S8) шина может быть намеренно недоступна —
+        // события их прогрев-заказов обязаны уйти во время сценария
+        // (проверки требуют событий для всех paid из фактов), поэтому
+        // здесь дожидаться их было бы и вредно, и бессмысленно.
+        boolean eventsDrained = !coldBoot || awaitEventDrain();
         joinBarrier();
 
         ready = true;
         long totalMs = (System.nanoTime() - t0) / 1_000_000;
-        log.info("Warmup: {} заказов отправлено за {} мс ({}), дренаж {} (итого {} мс)",
+        log.info("Warmup: {} заказов отправлено за {} мс ({}), дренаж {} ({}), события {} (итого {} мс)",
                 ids.size(), sentMs, coldBoot ? "холодный старт" : "рестарт",
-                drained ? "ok" : "TIMEOUT " + DRAIN_TIMEOUT_MS + " мс", totalMs);
+                drained ? "ok" : "TIMEOUT " + DRAIN_TIMEOUT_MS + " мс",
+                coldBoot ? (eventsDrained ? "ok" : "TIMEOUT " + EVENT_DRAIN_TIMEOUT_MS + " мс") : "пропущен",
+                totalMs);
     }
 
     /**
@@ -314,6 +349,32 @@ public class WarmupRunner implements ApplicationRunner {
             }
         }
         log.warn("Warmup: дренаж не завершился за {} мс, остаются PENDING", DRAIN_TIMEOUT_MS);
+        return false;
+    }
+
+    /**
+     * Ждёт, пока события order.paid прогрев-заказов уйдут из outbox
+     * в шину (EventsPublisher помечает строки sent_at).
+     *
+     * Отдельный, а не общий с заказами цикл: заказы могут быть оплачены
+     * минуту назад, а событие ещё ждать своей пачки — см. javadoc
+     * EVENT_DRAIN_TIMEOUT_MS, зачем мы этого ждём вообще.
+     */
+    private boolean awaitEventDrain() {
+        long deadline = System.currentTimeMillis() + EVENT_DRAIN_TIMEOUT_MS;
+        while (System.currentTimeMillis() < deadline) {
+            if (outboxRepository.countUnsent("order.paid") == 0) {
+                return true;
+            }
+            try {
+                Thread.sleep(POLL_INTERVAL_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        log.warn("Warmup: события order.paid не ушли за {} мс, рискуем попасть в факты S1",
+                EVENT_DRAIN_TIMEOUT_MS);
         return false;
     }
 }

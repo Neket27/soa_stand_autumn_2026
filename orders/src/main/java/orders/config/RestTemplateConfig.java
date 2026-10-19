@@ -48,6 +48,56 @@ import org.springframework.web.client.RestTemplate;
 @Configuration
 public class RestTemplateConfig {
 
+    /**
+     * HTTP-клиент шины событий (задание 2, EVENTS_URL).
+     *
+     * === ПОЧЕМУ НЕ ОБЩИЙ restTemplate ===
+     *
+     * Общий клиент настроен под оплату: read timeout 10 с, пул 150/75 —
+     * это бюджеты S4 (Circuit Breaker) и боевого пути Payment/Inventory.
+     * Шина ведёт себя иначе: в S6 часть её запросов ВИСИТ до конца
+     * 60-секундного отказа. С общим клиентом пачка из 100 событий
+     * превратилась бы в 100 × 10 с зависших потоков и соединений, и
+     * EventsPublisher перестал бы отдавать пачки вовремя — проверка
+     * «каждый paid заказ есть в шине» (30 с после восстановления)
+     * упала бы на таймауте.
+     *
+     * Здесь — короткие таймауты и маленький пул: висячий запрос
+     * обрывается быстро, пачка отпускается в очередь (releaseClaim)
+     * и повторяется через 200 мс. Это и есть задуманный S6-режим:
+     * «копятся в outbox → уходят сразу после подъёма шины».
+     */
+    @Bean
+    public RestTemplate busRestTemplate() {
+        PoolingHttpClientConnectionManager connectionManager =
+                new PoolingHttpClientConnectionManager();
+        // Пул под размер пачки EventsPublisher (100 событий параллельно),
+        // но ограничен: шина и так в отказе, плодить сотню сокетов смысла
+        // нет — очередь и так переживёт отказ в БД.
+        connectionManager.setMaxTotal(32);
+        connectionManager.setDefaultMaxPerRoute(32);
+        connectionManager.setDefaultConnectionConfig(ConnectionConfig.custom()
+                .setConnectTimeout(Timeout.ofSeconds(2))
+                // Read: шина «висит» в S6 до конца отказа — режем за 3 с
+                // и уходим в повтор. Достаточно и для здоровой шины:
+                // POST /events у заглушки отвечает за миллисекунды.
+                .setSocketTimeout(Timeout.ofSeconds(3))
+                .setTimeToLive(TimeValue.ofMinutes(5))
+                .build());
+
+        RequestConfig requestConfig = RequestConfig.custom()
+                .setConnectionRequestTimeout(Timeout.ofSeconds(2))
+                .build();
+
+        CloseableHttpClient httpClient = HttpClients.custom()
+                .setConnectionManager(connectionManager)
+                .setDefaultRequestConfig(requestConfig)
+                .evictExpiredConnections()
+                .build();
+
+        return new RestTemplate(new HttpComponentsClientHttpRequestFactory(httpClient));
+    }
+
     @Bean
     public RestTemplate restTemplate(ObjectMapper objectMapper) {
         // --- Пул соединений ---

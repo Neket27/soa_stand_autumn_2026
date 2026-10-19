@@ -10,6 +10,7 @@ import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 import orders.inventory.InventoryClient;
+import orders.api.dto.OrderPaidEvent;
 import orders.payment.PaymentClient;
 import orders.store.OrderRepository;
 
@@ -100,8 +101,9 @@ public class KafkaChargeDispatcher {
             switch (result.status()) {
                 case CHARGED -> {
                     // false → Reaper успел перевести заказ первым; в лог
-                    // пишем факт, а не «оплачен».
-                    if (orderRepository.transition(orderId, OrderStatus.PAID)) {
+                    // пишем факт, а не «оплачен». Событие order.paid пишет
+                    // только победитель перехода — см. markPaid.
+                    if (orderRepository.markPaid(orderId, OrderPaidEvent.forOrder(orderId))) {
                         log.info("Заказ {} оплачен", orderId);
                     } else {
                         log.info("Заказ {} уже переведён Reaper'ом", orderId);

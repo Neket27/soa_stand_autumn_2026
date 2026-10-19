@@ -71,6 +71,38 @@ CREATE TABLE IF NOT EXISTS release_duties (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- === ЗАДАНИЕ 2: ШИНА СОБЫТИЙ И БОНУСЫ ===
+--
+-- Исходящие события order.paid используют ОБЩИЙ outbox_events (см. выше):
+-- KafkaChargeDispatcher/Reaper при переходе заказа в PAID пишут событие
+-- в той же транзакции, EventsPublisher отправляет его HTTP в шину
+-- (EVENTS_URL) с at-least-once — копии делят один id события (id
+-- генерируется один раз при записи в outbox, в payload). Поэтому новая
+-- таблица нужна только входящей части:
+--
+-- bonus_events — журнал обработанных событий delivery.confirmed.
+-- Шина доставляет как минимум один раз: копии, одновременные копии,
+-- повторы после kill -9. Ключ(event_id) PRIMARY KEY + INSERT ON CONFLICT
+-- DO NOTHING в одной транзакции с начислением дают «ровно один раз»:
+-- конкурирующие копии сериализуются на уникальном индексе, проигравшая
+-- видит конфликт и НЕ начисляет повторно. Копия, пришедшая после убийства
+-- процесса посреди обработки, приходит после рестарта — транзакция
+-- откатилась целиком, журнала нет, начисление происходит сейчас.
+CREATE TABLE IF NOT EXISTS bonus_events (
+    event_id     TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    bonus_points BIGINT NOT NULL,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Балансы покупателей. Отдельная таблица, а не SUM по bonus_events:
+-- GET /users/{id}/bonus опрашивают часто, а SUM по журналу растущей
+-- таблицы — нечто, чему не место в горячем пути.
+CREATE TABLE IF NOT EXISTS bonus_balances (
+    user_id TEXT PRIMARY KEY,
+    points  BIGINT NOT NULL DEFAULT 0
+);
+
 -- Барьер готовности реплик после прогрева (см. WarmupRunner).
 --
 -- ЗАЧЕМ (найдено регрессией TASK=1 с агрессивным прогревом): раннер

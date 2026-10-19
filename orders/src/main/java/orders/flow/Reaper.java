@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import orders.inventory.InventoryClient;
+import orders.api.dto.OrderPaidEvent;
 import orders.payment.PaymentClient;
 import orders.store.OrderRepository;
 import orders.store.ReleaseDutyRepository;
@@ -110,8 +111,9 @@ public class Reaper {
                     case CHARGED -> {
                         // transition может вернуть false: заказ уже оплатил
                         // Consumer, пока мы шли по списку. В лог не пишем
-                        // «оплачен» — это было бы неправдой.
-                        if (orderRepository.transition(orderId, OrderStatus.PAID)) {
+                        // «оплачен» — это было бы неправдой. Событие
+                        // order.paid пишет только победитель — см. markPaid.
+                        if (orderRepository.markPaid(orderId, OrderPaidEvent.forOrder(orderId))) {
                             log.info("Reaper: заказ {} оплачен", orderId);
                         } else {
                             log.info("Reaper: заказ {} уже переведён Consumer'ом", orderId);
