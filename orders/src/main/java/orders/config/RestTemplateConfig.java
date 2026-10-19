@@ -56,11 +56,14 @@ public class RestTemplateConfig {
      * Общий клиент настроен под оплату: read timeout 10 с, пул 150/75 —
      * это бюджеты S4 (Circuit Breaker) и боевого пути Payment/Inventory.
      * Шина ведёт себя иначе: в S6 часть её запросов ВИСИТ до конца
-     * 60-секундного отказа. С общим клиентом пачка из 100 событий
-     * превратилась бы в 100 × 10 с зависших потоков и соединений, и
-     * EventsPublisher перестал бы отдавать пачки вовремя — проверка
-     * «каждый paid заказ есть в шине» (30 с после восстановления)
-     * упала бы на таймауте.
+     * 60-секундного отказа. С общим клиентом каждая такая пачка держала
+     * бы поток отправителя 10 с вместо 3: 100 событий через 16 потоков —
+     * это десятки секунд за проход, и укладываться в 30-секундное окно
+     * проверки «каждый paid заказ есть в шине» после восстановления
+     * пришлось бы на грани. Вдобавок наша сторона не должна полагаться
+     * на то, что сервер порвёт висящие соединения при конце отказа:
+     * короткий таймаут режет висяк сам, и дренаж после восстановления
+     * не зависит от поведения шины.
      *
      * Здесь — короткие таймауты и маленький пул: висячий запрос
      * обрывается быстро, пачка отпускается в очередь (releaseClaim)
@@ -114,9 +117,9 @@ public class RestTemplateConfig {
         connectionManager.setMaxTotal(150);          // весь пул на реплику
         connectionManager.setDefaultMaxPerRoute(75); // на один хост (mocks)
         connectionManager.setDefaultConnectionConfig(ConnectionConfig.custom()
-                // Connect: прежние 5 с (как было в SimpleClientHttpRequestFactory)
+                // Connect: 5 с
                 .setConnectTimeout(Timeout.ofSeconds(5))
-                // Read (socket) — прежние 10 с: именно он даёт
+                // Read (socket) — 10 с: именно он даёт
                 // java.net.SocketTimeoutException для Circuit Breaker (S4)
                 .setSocketTimeout(Timeout.ofSeconds(10))
                 // Жизнь соединения: дольше живёт — больше переиспользования,
@@ -128,7 +131,7 @@ public class RestTemplateConfig {
         RequestConfig requestConfig = RequestConfig.custom()
                 // Ожидание свободного соединения из пула: отдельный таймаут,
                 // чтобы при гипотетическом исчерпании пула запрос упал
-                // предсказуемо, а не завис до бесконечности (бюджет 1 с)
+                // предсказуемо, а не завис до бесконечности (бюджет 2 с)
                 .setConnectionRequestTimeout(Timeout.ofSeconds(2))
                 .build();
 
@@ -147,10 +150,28 @@ public class RestTemplateConfig {
         // стратегию (JacksonConfig). Без неё DTO ушёл бы в JSON как
         // {"orderId":...}, а сервисы ждут {"order_id":...}.
         for (HttpMessageConverter<?> converter : restTemplate.getMessageConverters()) {
-            if (converter instanceof MappingJackson2HttpMessageConverter jackson) {
+            if (converter instanceof MappingJackson2HttpMessageConverter jackson)
                 jackson.setObjectMapper(objectMapper);
-            }
         }
         return restTemplate;
     }
+
+    /*
+     * Итог по двум клиентам: асимметрия таймаутов осознанная.
+     *
+     * Платёжный клиент (выше) обязан ТЕРПЕТЬ медленность: S3 даёт
+     * Payment латентность 2 с, S7 — 3 с (kill_latency_ms), и это
+     * «медленные, но успешные» вызовы. Резать их коротким таймаутом
+     * нельзя: таймаут для Circuit Breaker — сигнал отказа, breaker
+     * увидел бы волну таймаутов, открылся, и заказы зависли в pending.
+     * Поэтому read 10 с — шапка над спецификацией; validation к тому же
+     * допускает поднять латентность до десятков секунд.
+     *
+     * Клиент шины (выше) обязан БЫСТРО РЕЗАТЬ висяк: повтор для него
+     * бесплатен — очередь живёт в outbox в БД, а не в памяти. Поэтому
+     * read 3 с.
+     *
+     * Один конфиг этих задач не решает — это и есть причина
+     * существования второго бина, а не «две настройки одного клиента».
+     */
 }
