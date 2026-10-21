@@ -2,8 +2,6 @@ package orders.flow;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -16,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Фоновый процесс Transactional Outbox: читает outbox_events,
@@ -37,6 +36,27 @@ import java.util.concurrent.TimeUnit;
  * отправлено повторно. Дубликаты безопасны:
  *   — Consumer проверяет статус заказа и пропускает уже обработанные;
  *   — Idempotency-Key в Payment защищает от двойного списания.
+ *
+ * === BACKOFF ПРИ ОТКАЗЕ KAFKA ===
+ *
+ * Если Kafka недоступна, упавшая пачка остаётся claimed до истечения
+ * visibility timeout (60 с) — сама она не переотправляется на каждом
+ * тике. Но поллер продолжал бы каждые 200 мс забирать новые пачки и
+ * штамповать WARN: при затяжном отказе это лишняя нагрузка на брокер
+ * и шум в логах.
+ *
+ * Поэтому при ошибке отправки поллер засыпает на экспоненциальный
+ * интервал 200 мс × 2^n (первый отказ — 200 мс, второй — 400 мс, ...,
+ * потолок 60 с), после успеха сбрасывается в ноль. Состояние локальное
+ * для реплики: общий счётчик не нужен, каждая реплика затихает и
+ * просыпается независимо. После подъёма Kafka очередь уходит не позже
+ * чем через MAX_BACKOFF — раньше это же время давал claim-lease, так
+ * что время восстановления не выросло.
+ *
+ * === РУЧНАЯ ПРОВЕРКА (S2) ===
+ *
+ * Убедись, что при недоступной Kafka события копятся в outbox
+ * (sent_at IS NULL), а после её подъёма уходят (логи, /admin/facts).
  */
 
 @Slf4j
@@ -56,8 +76,31 @@ public class OutboxDispatcher {
      */
     private static final Duration VISIBILITY_TIMEOUT = Duration.ofSeconds(60);
 
+    /** Первый экспоненциальный интервал после неудачной отправки (см. backoffDelayMillis). */
+    private static final long MIN_BACKOFF_MILLIS = 200;
+
+    /** Потолок экспоненциального backoff'а: после подъёма Kafka очередь уйдёт не позже чем через 60 с. */
+    private static final long MAX_BACKOFF_MILLIS = 60_000;
+
     private final OutboxRepository outboxRepository;
     private final KafkaTemplate<String, String> kafkaTemplate;
+
+    /**
+     * Неудачные отправки подряд (для экспоненциального backoff'а).
+     * Сейчас тиком занимается один поток шедулера (fixedDelay), так что
+     * хватило бы и обычного int; atomic — чтобы инкремент оставался
+     * корректным, если тик когда-нибудь вынесут в отдельный поток.
+     */
+    private final AtomicInteger consecutiveFailures = new AtomicInteger();
+
+    /**
+     * nanoTime следующей разрешённой попытки: пока оно не наступило,
+     * pump() выходит сразу, не ходя даже в БД за claim'ом. 0 — «backoff
+     * не действует». volatile — значение пишется в конце тика (успех или
+     * ошибка) и читается в начале следующего; volatile не даёт потоку
+     * шедулера работать с закэшированным значением.
+     */
+    private volatile long nextAttemptNanos;
 
     /**
      * Тик поллинга: каждые 200 мс берём пачку неотправленных событий.
@@ -67,6 +110,12 @@ public class OutboxDispatcher {
      */
     @Scheduled(fixedDelay = 200)
     public void pump() {
+        // Backoff: после неудачной отправки не ходим в БД за claim'ом до
+        // наступления nextAttemptNanos. Сравнение через разность
+        // (deadline - сейчас > 0)
+        if (nextAttemptNanos != 0 && nextAttemptNanos - System.nanoTime() > 0) {
+            return;
+        }
         // Claim выдаёт пачку этому конкурентному запросу; остальные
         // конкурентные запросы пропускают эти строки (SKIP LOCKED) и могут
         // забрать другие. Claim — lease, а не блокировка на всё время
@@ -105,11 +154,17 @@ public class OutboxDispatcher {
             outboxRepository.markSent(events.stream()
                     .map(OutboxRepository.OutboxEvent::id)
                     .toList());
+            // Отправка прошла — backoff сбрасывается: следующий тик через
+            // обычные 200 мс, даже если перед этим были неудачи.
+            consecutiveFailures.set(0);
+            nextAttemptNanos = 0;
         } catch (InterruptedException e) {
             // Нас прервали (остановка приложения): восстанавливаем флаг,
             // иначе шедулер не сумеет корректно завершить поток. События
             // уже заявлены: они вернутся к другим репликам (или к нам после
             // рестарта) по истечении visibility timeout — дубль безопасен.
+            // Backoff не трогаем: тик прерван, а не упал из-за Kafka —
+            // после рестарта поллер начнёт работу с чистого листа.
             Thread.currentThread().interrupt();
             log.info("Outbox: отправка прервана, выходим из тика");
         } catch (Exception e) {
@@ -117,9 +172,35 @@ public class OutboxDispatcher {
             // истечения visibility timeout. Отдельные send() могли успеть
             // передать часть запросов producer'у; повтор безопасен благодаря
             // идемпотентной обработке.
-            log.warn("Outbox: не удалось отправить пачку из {} событий, повтор после claim-тайм-аута: {}",
-                    events.size(), e.getMessage());
+            //
+            // Саму пачку claim и так не даст переотправить до истечения
+            // lease, а вот НОВЫЕ пачки поллер без backoff'а забирал бы
+            // каждые 200 мс. Засыпаем экспоненциально: 200 мс, 400 мс, ...,
+            // до 60 с.
+            long backoff = backoffDelayMillis(consecutiveFailures.incrementAndGet());
+            nextAttemptNanos = System.nanoTime() + backoff * 1_000_000;
+            log.warn("Outbox: не удалось отправить пачку из {} событий ({}-я неудача подряд), "
+                            + "следующая попытка через {} мс; упавшая пачка ждёт claim-тайм-аут: {}",
+                    events.size(), consecutiveFailures.get(), backoff, e.getMessage());
         }
+    }
+
+    /**
+     * Экспоненциальный интервал до следующей попытки: MIN_BACKOFF × 2^(n-1),
+     * ограничен сверху MAX_BACKOFF.
+     *
+     * n — число неудач подряд, начиная с 1: первый отказ → 200 мс,
+     * второй → 400 мс, третий → 800 мс, ... Всё выше потолка (60 с)
+     * не растёт: дольше «молчать» смысла нет — столько же в худшем случае
+     * ждёт и истечение claim-lease, плюс при подъёме Kafka очередь должна
+     * уйти разумно быстро.
+     *
+     * Выделено в чистую функцию, чтобы рост задержки проверялся без
+     * реального ожидания (см. OutboxDispatcherTest).
+     */
+    static long backoffDelayMillis(int consecutiveFailures) {
+        long shift = Math.min(consecutiveFailures - 1, 16);
+        return Math.min(MIN_BACKOFF_MILLIS << shift, MAX_BACKOFF_MILLIS);
     }
 
     /**
