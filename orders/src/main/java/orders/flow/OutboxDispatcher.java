@@ -2,11 +2,11 @@ package orders.flow;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import orders.store.OutboxRepository;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import orders.store.OutboxRepository;
 
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -50,14 +50,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * потолок 60 с), после успеха сбрасывается в ноль. Состояние локальное
  * для реплики: общий счётчик не нужен, каждая реплика затихает и
  * просыпается независимо. После подъёма Kafka очередь уходит не позже
- * чем через MAX_BACKOFF — раньше это же время давал claim-lease, так
- * что время восстановления не выросло.
- *
- * === РУЧНАЯ ПРОВЕРКА (S2) ===
- *
- * Убедись, что при недоступной Kafka события копятся в outbox
- * (sent_at IS NULL), а после её подъёма уходят (логи, /admin/facts).
- */
+ * чем через MAX_BACKOFF.
+ * */
 
 @Slf4j
 @Component
@@ -121,8 +115,6 @@ public class OutboxDispatcher {
         // забрать другие. Claim — lease, а не блокировка на всё время
         // отправки: после его истечения строку может забрать другая реплика,
         // даже если прежняя ещё обрабатывает пачку.
-        // Раньше все читали одни и те же строки, что давало дубли Kafka и
-        // блокировки UPDATE (см. javadoc OutboxRepository.claimBatch).
         List<OutboxRepository.OutboxEvent> events =
                 outboxRepository.claimBatch("order.charge", BATCH_SIZE, VISIBILITY_TIMEOUT);
         if (events.isEmpty()) {
@@ -131,14 +123,9 @@ public class OutboxDispatcher {
         try {
             // Отправляем пачку ПАРАЛЛЕЛЬНО: send() асинхронный, сеть и
             // батчинг продюсера работают на всех событиях одновременно.
-            // Раньше было последовательное get() на каждое событие — тик
-            // стоил N round-trips и не поспевал за потоком заказов на
-            // высоких темпах.
             //
             // get(15, SECONDS) — ждём подтверждения Kafka по ВСЕМ событиям
             // пачки и только после этого помечаем: «в никуда» не отправляем
-            // (fire-and-forget подтвердил бы markSent доставки, которой
-            // не было).
             //
             // Таймаут как страховка поверх конфига продюсера:
             // delivery.timeout.ms = 10 с ограничивает только future, а
