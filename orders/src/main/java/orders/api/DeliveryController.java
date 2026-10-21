@@ -1,5 +1,6 @@
 package orders.api;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -32,7 +33,7 @@ public class DeliveryController {
     private final BonusService bonusService;
 
     @PostMapping("/webhooks/delivery")
-    public ResponseEntity<Void> deliveryConfirmed(@RequestBody DeliveryConfirmed event) {
+    public ResponseEntity<Void> deliveryConfirmed(@Valid @RequestBody DeliveryConfirmed event) {
         bonusService.confirmDelivery(event);
         // 204 и для первой доставки, и для копии: ответ одинаков, разница
         // только в том, начислили ли мы (это внутреннее дело, шине

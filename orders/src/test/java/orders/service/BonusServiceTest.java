@@ -14,16 +14,15 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Правила валидации и делегирования BonusService.
+ * Делегирование BonusService.
  *
  * Идемпотентность «ровно один раз» живёт в BonusRepository (транзакция
- * журнал+баланс) и проверяется сценарием S8 на стенде; здесь — то, что
- * стоит ДО транзакции.
+ * журнал+баланс) и проверяется сценарием S8 на стенде. Валидация входного
+ * DTO проверяется отдельно через Bean Validation.
  */
 @ExtendWith(MockitoExtension.class)
 class BonusServiceTest {
@@ -61,32 +60,8 @@ class BonusServiceTest {
     }
 
     @Test
-    void пустые_id_или_user_id_отклоняются_до_транзакции() {
-        assertThrows(IllegalArgumentException.class, () -> bonusService.confirmDelivery(
-                event("", "delivery.confirmed", "u-3", 40)));
-        assertThrows(IllegalArgumentException.class, () -> bonusService.confirmDelivery(
-                event("evt-1", "delivery.confirmed", " ", 40)));
-        assertThrows(IllegalArgumentException.class, () -> bonusService.confirmDelivery(
-                event(null, "delivery.confirmed", "u-3", 40)));
-        verify(bonusRepository, never()).applyDeliveryEventOnce(any());
-    }
-
-    @Test
-    void чужой_тип_события_отклоняется() {
-        assertThrows(IllegalArgumentException.class, () -> bonusService.confirmDelivery(
-                event("evt-1", "order.paid", "u-3", 40)));
-        verify(bonusRepository, never()).applyDeliveryEventOnce(any());
-    }
-
-    @Test
-    void нулевые_и_отрицательные_бонусы_отклоняются() {
-        // Контракт: bonus_points minimum: 1. Начислять 0 (или убыток) —
-        // искажение бизнес-правила, поэтому отказ до транзакции.
-        assertThrows(IllegalArgumentException.class, () -> bonusService.confirmDelivery(
-                event("evt-1", "delivery.confirmed", "u-3", 0)));
-        assertThrows(IllegalArgumentException.class, () -> bonusService.confirmDelivery(
-                event("evt-1", "delivery.confirmed", "u-3", -5)));
-        verify(bonusRepository, never()).applyDeliveryEventOnce(any());
+    void отсутствие_самого_события_отклоняется() {
+        assertThrows(IllegalArgumentException.class, () -> bonusService.confirmDelivery(null));
     }
 
     @Test

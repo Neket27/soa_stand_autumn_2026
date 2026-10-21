@@ -26,7 +26,8 @@ import orders.store.OrderRepository;
  * 2. Этот Consumer читает событие и вызывает PaymentClient.charge()
  * 3. При 201 → заказ переходит в PAID
  * 4. При 402 → заказ переходит в REJECTED, снимаем резерв в Inventory
- * 5. При 500/сети → исключение, DefaultErrorHandler повторяет чтение
+ * 5. При 500/сети → исключение, DefaultErrorHandler повторно обрабатывает
+ *    ту же запись Kafka
  *
  * === ВАЖНЫЕ ЛОВУШКИ (по ним падал S1) ===
  *
@@ -55,10 +56,12 @@ public class KafkaChargeDispatcher {
      * Consumer: читает события из топика orders-charge.
      *
      * Ретраи настроены в KafkaConfig.kafkaListenerContainerFactory:
-     * FixedBackOff(5 с, 9 повторов) — при 500/сети исключение из веток
-     * SERVER_ERROR/NETWORK возвращает событие в топик, но с паузой, а
-     * не «вслепую» сразу. После исчерпания попыток событие пропускается,
-     * заказ остаётся PENDING — его повторит Reaper.
+     * FixedBackOff(1 с, 35 повторов) — при 500/сети исключение из веток
+     * SERVER_ERROR/NETWORK приводит к повторной обработке той же записи,
+     * а не к её публикации обратно в топик. 1 с — пауза между повторами;
+     * полное время зависит также от длительности вызовов Payment и состояния
+     * Circuit Breaker. После исчерпания повторов запись передаётся recovery
+     * handler; заказ может остаться PENDING, и его подберёт Reaper.
      */
     // Партиций столько же, сколько consumer-потоков (KafkaConfig.NewTopic):
     // оплата с высокой задержкой Payment (S3: 2000 мс) должна идти
@@ -73,8 +76,8 @@ public class KafkaChargeDispatcher {
             //    что и заказ, и публикуется только после коммита. Поэтому
             //    null означает чужое/устаревшее событие (например, из
             //    прошлого запуска стенда: Kafka-топик живёт дольше БД).
-            //    Ретрай бессмыслен — заказ никогда не появится, а каждая
-            //    попытка стоит FixedBackOff (5 с). Подтверждаем и идём дальше.
+            //    Ретрай бессмыслен — заказ никогда не появится. Подтверждаем
+            //    запись без повторной обработки и идём дальше.
             //
             // Статус и сумма берутся ОДНИМ запросом: раньше это были
             // getStatus() здесь + getAmount() внутри charge() — два
@@ -136,7 +139,8 @@ public class KafkaChargeDispatcher {
                 }
             }
         } catch (Exception e) {
-            // Без ack: DefaultErrorHandler вернёт событие в топик
+            // Без ack: DefaultErrorHandler повторно обработает эту запись,
+            // а после исчерпания повторов передаст её recovery handler.
             log.error("Ошибка обработки заказа {}", orderId, e);
             throw (e instanceof RuntimeException re) ? re : new RuntimeException(e);
         }
